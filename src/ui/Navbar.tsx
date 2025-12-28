@@ -1,6 +1,7 @@
 // src/ui/Navbar.tsx
 import type { CSSProperties } from "react";
 import { NavLink, useLocation } from "react-router-dom";
+import { useEditorState } from "../state/useEditorState";
 
 /**
  * Small inline SVG icon used for the "open toolbar" button.
@@ -46,12 +47,20 @@ export function Navbar({
 }) {
   const { pathname } = useLocation();
 
+  const { selectedLayoutId, savedLayouts } = useEditorState();
+
   /**
    * The toolbar exists only on the Editor page routes:
    * - "/" for a new/empty layout
    * - "/saved/:id" for editing a saved layout
    */
   const isEditorRoute = pathname === "/" || pathname.startsWith("/saved/");
+
+  const currentLayout = selectedLayoutId
+    ? savedLayouts.find((l) => l.id === selectedLayoutId) ?? null
+    : null;
+
+  const currentLayoutName = currentLayout?.name ?? "Empty layout";
 
   /**
    * Base link style shared by all nav links.
@@ -114,13 +123,6 @@ export function Navbar({
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        {/*
-          Show the menu icon only when:
-          - we're on an editor route (where a toolbar exists), and
-          - the sidebar is currently closed.
-
-          This keeps the UI clean on non-editor pages and avoids redundant controls.
-        */}
         {isEditorRoute && !isSidebarOpen ? (
           <button
             type="button"
@@ -133,15 +135,40 @@ export function Navbar({
           </button>
         ) : null}
 
-        {/* Product/title label (kept simple for take-home clarity). */}
-        <div style={{ fontWeight: 950, color: "#111827", fontSize: 14 }}>
-          Ceiling Editor
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+          <div style={{ fontWeight: 950, color: "#111827", fontSize: 14 }}>
+            Ceiling Editor
+          </div>
+
+          {isEditorRoute ? (
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 800,
+                color: "#6b7280",
+                border: "1px solid #e5e7eb",
+                background: "#f9fafb",
+                padding: "4px 8px",
+                borderRadius: 999,
+                maxWidth: 260,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+              title={
+                selectedLayoutId
+                  ? `${currentLayoutName} (${selectedLayoutId})`
+                  : currentLayoutName
+              }
+            >
+              {currentLayoutName}
+            </div>
+          ) : null}
         </div>
 
-        {/* Primary navigation. NavLink handles active state automatically. */}
         <nav style={{ display: "flex", gap: 8 }}>
           <NavLink to="/" end style={getLinkStyle}>
-            Editor
+            New
           </NavLink>
 
           <NavLink to="/saved" style={getLinkStyle}>
@@ -154,7 +181,6 @@ export function Navbar({
         </nav>
       </div>
 
-      {/* Simple attribution: useful for take-home reviewers and demo screenshots. */}
       <div style={{ fontSize: 12, color: "#6b7280", fontWeight: 700 }}>
         Author: <span style={{ color: "#111827" }}>Allwin James Andrews</span>
       </div>

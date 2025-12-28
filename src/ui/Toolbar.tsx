@@ -33,6 +33,9 @@ import type {
  */
 const TOOLS: EditorTool[] = ["PAN", "SELECT", "PLACE", "ERASE"];
 
+const GRID_MAX_RECOMMENDED = 100;
+const GRID_MAX_HARD = 1000;
+
 /**
  * Shared semantic colors for the editor.
  *
@@ -618,6 +621,8 @@ export function Toolbar({
   const [colsInput, setColsInput] = useState<string>(String(state.grid.cols));
   const [rowsInput, setRowsInput] = useState<string>(String(state.grid.rows));
 
+  const [gridError, setGridError] = useState<string | null>(null);
+
   /**
    * Status filter and rename state are UI-only.
    * They do not belong in EditorState because they don't affect layout output.
@@ -646,33 +651,64 @@ export function Toolbar({
   const placeMode = getPlaceModeFromState(state);
   const isInvalidModeActive = placeMode === "INVALID_CELL";
 
-  /**
-   * Determines if the "Apply" grid button should be enabled.
-   * We only require numeric parseability; clamping happens when applied.
-   */
-  const canApplyGrid = useMemo(() => {
+  const parsedGrid = useMemo(() => {
     const cols = Number(colsInput);
     const rows = Number(rowsInput);
-    return Number.isFinite(cols) && Number.isFinite(rows);
+    const colsOk = Number.isFinite(cols);
+    const rowsOk = Number.isFinite(rows);
+    return {
+      cols,
+      rows,
+      colsOk,
+      rowsOk,
+    };
   }, [colsInput, rowsInput]);
 
-  /**
-   * Apply grid size after normalizing user input.
-   * The provider handles trimming out-of-bounds components and invalid cells.
-   */
-  const applyGridSize = () => {
-    const cols = clampInt(Number(colsInput), 1, 1000);
-    const rows = clampInt(Number(rowsInput), 1, 1000);
+  const gridWithinHardLimit = useMemo(() => {
+    if (!parsedGrid.colsOk || !parsedGrid.rowsOk) return false;
+    if (parsedGrid.cols < 1 || parsedGrid.rows < 1) return false;
+    if (parsedGrid.cols > GRID_MAX_HARD || parsedGrid.rows > GRID_MAX_HARD)
+      return false;
+    return true;
+  }, [parsedGrid]);
 
-    setColsInput(String(cols));
-    setRowsInput(String(rows));
-    setGrid(cols, rows);
+  /**
+   * Determines if the "Apply" grid button should be enabled.
+   * We require valid numbers and a valid range. Normalization happens on apply.
+   */
+  const canApplyGrid = useMemo(() => {
+    return gridWithinHardLimit;
+  }, [gridWithinHardLimit]);
+
+  const applyGridSize = () => {
+    const cols = Number(colsInput);
+    const rows = Number(rowsInput);
+
+    if (!Number.isFinite(cols) || !Number.isFinite(rows)) {
+      setGridError("Enter valid numbers for rows and columns.");
+      return;
+    }
+
+    if (cols < 1 || rows < 1) {
+      setGridError("Grid size must be at least 1×1.");
+      return;
+    }
+
+    if (cols > GRID_MAX_HARD || rows > GRID_MAX_HARD) {
+      setGridError(`Max supported grid is ${GRID_MAX_HARD}×${GRID_MAX_HARD}.`);
+      return;
+    }
+
+    setGridError(null);
+
+    const nextCols = clampInt(cols, 1, GRID_MAX_HARD);
+    const nextRows = clampInt(rows, 1, GRID_MAX_HARD);
+
+    setColsInput(String(nextCols));
+    setRowsInput(String(nextRows));
+    setGrid(nextCols, nextRows);
   };
 
-  /**
-   * Deletes either a component or an invalid cell from the document.
-   * Uses a confirmation prompt since this is destructive.
-   */
   const deleteItem = (it: ListItem) => {
     const ok = window.confirm(`Delete "${it.name}"?`);
     if (!ok) return;
@@ -711,10 +747,6 @@ export function Toolbar({
     });
   };
 
-  /**
-   * Clears the entire layout.
-   * This keeps grid and camera intact but removes all placed items and labels.
-   */
   const clearAll = () => {
     setState((prev) => ({
       ...prev,
@@ -730,10 +762,6 @@ export function Toolbar({
     setRenameError(null);
   };
 
-  /**
-   * Clears any selection and exits rename mode.
-   * Selection exists in EditorState because it affects how the canvas behaves.
-   */
   const clearSelection = () => {
     setSelectedComponentId(null);
 
@@ -784,10 +812,6 @@ export function Toolbar({
     flex: "0 0 auto",
   };
 
-  /**
-   * Save enablement can be driven by the parent (page) or default to enabled.
-   * This is useful if the list page wants to disable save while a dialog is open.
-   */
   const saveEnabled = canSaveLayout ?? true;
 
   const saveButton: CSSProperties = {
@@ -807,9 +831,6 @@ export function Toolbar({
     whiteSpace: "nowrap",
   };
 
-  /**
-   * Counts per component type for the palette cards and the status header.
-   */
   const countsByType = useMemo(() => {
     const map: Record<ComponentType, number> = {
       LIGHT: 0,
@@ -821,13 +842,6 @@ export function Toolbar({
     return map;
   }, [state.components]);
 
-  /**
-   * Build a case-insensitive set of all current display names.
-   *
-   * Used to enforce uniqueness during rename across:
-   * - components (label or autoName)
-   * - invalid cells (label or derived IV# name)
-   */
   const takenNames = useMemo(() => {
     const set = new Set<string>();
 
@@ -851,15 +865,6 @@ export function Toolbar({
     return set;
   }, [state.components, state.invalidCells, invalidLabels]);
 
-  /**
-   * Builds the grouped "Status list".
-   *
-   * - Components are grouped by type and sorted by stable autoName.
-   * - Invalid cells are grouped under INVALID_CELL and named IV# based on key order.
-   *
-   * The derived IV# scheme is stable as long as the key ordering is stable.
-   * Custom labels are stored in state and override the derived name.
-   */
   const placedList = useMemo(() => {
     const groups: Record<StatusGroupType, ListItem[]> = {
       LIGHT: [],
@@ -920,10 +925,6 @@ export function Toolbar({
     return countsByType[statusFilter];
   }, [statusFilter, totalPlaced, invalidCount, countsByType]);
 
-  /**
-   * Tools like SELECT/ERASE don't make sense when there is nothing to interact with.
-   * Returning a reason string enables disabled tooltips.
-   */
   const getToolDisabledReason = (tool: EditorTool): string | null => {
     if ((tool === "SELECT" || tool === "ERASE") && !hasAnyPlaced) {
       return "Add at least one component or invalid cell before using this tool.";
@@ -973,10 +974,6 @@ export function Toolbar({
     );
   };
 
-  /**
-   * Enters rename mode for the given item id.
-   * Draft text is stored separately so users can cancel without side effects.
-   */
   const startRename = (id: string, currentName: string) => {
     setRenamingId(id);
     setRenameError(null);
@@ -992,10 +989,6 @@ export function Toolbar({
     setRenameError(null);
   };
 
-  /**
-   * Returns the current display name for an item.
-   * This is used to detect rename no-ops (case-insensitive).
-   */
   const getCurrentDisplayNameForId = (
     group: StatusGroupType,
     id: string
@@ -1015,14 +1008,6 @@ export function Toolbar({
     return getComponentDisplayName(c).name;
   };
 
-  /**
-   * Commits a rename.
-   *
-   * Rules:
-   * - empty input clears the custom label (revert to autoName/IV#)
-   * - unchanged (case-insensitive) input exits rename without writing state
-   * - duplicate names are rejected across all items
-   */
   const commitRename = (group: StatusGroupType, id: string) => {
     const raw = renameDrafts[id] ?? "";
     const next = raw.trim();
@@ -1146,13 +1131,6 @@ export function Toolbar({
     color: "#ffffff",
   };
 
-  /**
-   * PLACE tool has two behaviors:
-   * - placing components
-   * - toggling invalid cells
-   *
-   * placeMode lives in EditorState so CanvasStage can render correct affordances.
-   */
   const setPlaceMode = (mode: PlaceMode) => {
     setState((prev) => ({
       ...prev,
@@ -1184,13 +1162,6 @@ export function Toolbar({
     }));
   }, [placedList, statusFilter]);
 
-  /**
-   * Selecting a list item drives selection on the canvas:
-   * - component: selectedComponentId
-   * - invalid cell: selectedInvalidCellKey
-   *
-   * We force SELECT tool so the canvas behavior matches user intent.
-   */
   const selectListItem = (it: ListItem) => {
     setRenameError(null);
 
@@ -1212,10 +1183,6 @@ export function Toolbar({
     setTool("SELECT");
   };
 
-  /**
-   * Save behavior can be overridden by the parent page (for example, to show a dialog).
-   * If not provided, we call the provider's saveLayout().
-   */
   const handleSave = () => {
     if (!saveEnabled) return;
 
@@ -1285,7 +1252,10 @@ export function Toolbar({
             </div>
             <input
               value={colsInput}
-              onChange={(e) => setColsInput(e.target.value)}
+              onChange={(e) => {
+                setColsInput(e.target.value);
+                setGridError(null);
+              }}
               inputMode="numeric"
               style={inputStyle}
             />
@@ -1297,12 +1267,21 @@ export function Toolbar({
             </div>
             <input
               value={rowsInput}
-              onChange={(e) => setRowsInput(e.target.value)}
+              onChange={(e) => {
+                setRowsInput(e.target.value);
+                setGridError(null);
+              }}
               inputMode="numeric"
               style={inputStyle}
             />
           </div>
         </div>
+
+        {gridError ? (
+          <div style={{ marginTop: 10, fontSize: 12, color: "#b91c1c" }}>
+            {gridError}
+          </div>
+        ) : null}
 
         <button
           type="button"
@@ -1326,7 +1305,7 @@ export function Toolbar({
         </button>
 
         <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
-          Range: 1–1000
+          Recommended: 1–{GRID_MAX_RECOMMENDED} · Max: 1–{GRID_MAX_HARD}
         </div>
       </AccordionSection>
 
@@ -1335,10 +1314,10 @@ export function Toolbar({
         title="Tool"
         hint={`Current: ${state.tool}`}
         tooltip={
-          "PAN: drag to move view.\n" +
-          "SELECT: click to select and drag components, or click invalid cells to highlight.\n" +
-          "PLACE: click to add or toggle invalid cells.\n" +
-          "ERASE: click to delete components or invalid cells."
+          "PAN: Drag to move view.\n" +
+          "SELECT: Click to select and drag components, or click invalid cells to highlight.\n" +
+          "PLACE: Click to add or toggle invalid cells.\n" +
+          "ERASE: Click to delete components or invalid cells."
         }
         open={openTool}
         onToggle={() => setOpenTool((v) => !v)}
