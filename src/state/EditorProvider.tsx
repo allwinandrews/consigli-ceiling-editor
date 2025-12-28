@@ -7,7 +7,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { EditorState, PlacedComponent, cellKey } from "../types/editor";
+import type { EditorState, PlacedComponent } from "../types/editor";
+import { cellKey } from "../types/editor";
 import { initialEditorState } from "./initialState";
 import {
   EditorStateContext,
@@ -64,6 +65,41 @@ type SavedLayoutEntryV1 = SavedLayoutMeta & {
   schemaVersion: 1;
   data: PersistedEditorStateV1;
 };
+
+/**
+ * localStorage is not guaranteed to be available (private mode, quota, tests, SSR).
+ * These wrappers keep the app functional even when persistence fails.
+ */
+function canUseStorage(): boolean {
+  return typeof window !== "undefined" && !!window.localStorage;
+}
+
+function safeStorageGet(key: string): string | null {
+  if (!canUseStorage()) return null;
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeStorageSet(key: string, value: string) {
+  if (!canUseStorage()) return;
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // If storage is unavailable/full, we skip persistence to keep UX responsive.
+  }
+}
+
+function safeStorageRemove(key: string) {
+  if (!canUseStorage()) return;
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // no-op
+  }
+}
 
 /**
  * Parse JSON safely without throwing, returning null on invalid input.
@@ -365,7 +401,7 @@ function makeEmptyEditorState(): EditorState {
  * This acts as the "open document pointer" for refresh behavior.
  */
 function readSelectedLayoutId(): string | null {
-  const v = localStorage.getItem(STORAGE_KEY_SELECTED_LAYOUT_ID);
+  const v = safeStorageGet(STORAGE_KEY_SELECTED_LAYOUT_ID);
   return v && v.length > 0 ? v : null;
 }
 
@@ -375,10 +411,10 @@ function readSelectedLayoutId(): string | null {
  */
 function writeSelectedLayoutId(id: string | null) {
   if (!id) {
-    localStorage.removeItem(STORAGE_KEY_SELECTED_LAYOUT_ID);
+    safeStorageRemove(STORAGE_KEY_SELECTED_LAYOUT_ID);
     return;
   }
-  localStorage.setItem(STORAGE_KEY_SELECTED_LAYOUT_ID, id);
+  safeStorageSet(STORAGE_KEY_SELECTED_LAYOUT_ID, id);
 }
 
 /**
@@ -386,7 +422,7 @@ function writeSelectedLayoutId(id: string | null) {
  * Corrupt or unsupported entries are ignored to keep the app resilient.
  */
 function readSavedLayouts(): SavedLayoutEntryV1[] {
-  const raw = localStorage.getItem(STORAGE_KEY_SAVED_LAYOUTS);
+  const raw = safeStorageGet(STORAGE_KEY_SAVED_LAYOUTS);
   if (!raw) return [];
 
   const parsed = safeParseJson(raw);
@@ -426,7 +462,7 @@ function readSavedLayouts(): SavedLayoutEntryV1[] {
  * This is called only when the saved layouts list changes (save/rename/delete).
  */
 function writeSavedLayouts(entries: SavedLayoutEntryV1[]) {
-  localStorage.setItem(STORAGE_KEY_SAVED_LAYOUTS, JSON.stringify(entries));
+  safeStorageSet(STORAGE_KEY_SAVED_LAYOUTS, JSON.stringify(entries));
 }
 
 /**
@@ -516,6 +552,35 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     setHistoryLen(pastRef.current.length);
   }, []);
 
+  const hasSameInvalidCells = (a: Set<string>, b: Set<string>) => {
+    if (a === b) return true;
+    if (a.size !== b.size) return false;
+    for (const k of a) if (!b.has(k)) return false;
+    return true;
+  };
+
+  /**
+   * Determines whether a state transition changes the produced layout output.
+   * This keeps undo meaningful and avoids history entries for interaction-only updates.
+   */
+  const isLayoutAffectingChange = (prev: EditorState, next: EditorState) => {
+    if (prev === next) return false;
+
+    if (prev.grid !== next.grid) return true;
+    if (prev.components !== next.components) return true;
+
+    if (!hasSameInvalidCells(prev.invalidCells, next.invalidCells)) return true;
+
+    const prevLabels = (prev as unknown as { invalidCellLabels?: unknown })
+      .invalidCellLabels;
+    const nextLabels = (next as unknown as { invalidCellLabels?: unknown })
+      .invalidCellLabels;
+
+    if (prevLabels !== nextLabels) return true;
+
+    return false;
+  };
+
   /**
    * Public setState wrapper that automatically records undo history.
    * Any consumer using setState becomes undoable unless the update is a no-op.
@@ -528,7 +593,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
             ? (action as (p: EditorState) => EditorState)(prev)
             : action;
 
-        if (next !== prev) pushHistory(prev);
+        if (isLayoutAffectingChange(prev, next)) pushHistory(prev);
         return next;
       });
     },
@@ -537,13 +602,17 @@ export function EditorProvider({ children }: { children: ReactNode }) {
 
   /**
    * Internal helper used by the typed setters below.
-   * recordHistory is used to keep undo focused on layout-affecting changes only.
+   * recordHistory keeps undo focused on layout-affecting changes only.
    */
   const applyUpdate = useCallback(
     (updater: (prev: EditorState) => EditorState, recordHistory: boolean) => {
       setStateInternal((prev) => {
         const next = updater(prev);
-        if (recordHistory && next !== prev) pushHistory(prev);
+
+        if (recordHistory && isLayoutAffectingChange(prev, next)) {
+          pushHistory(prev);
+        }
+
         return next;
       });
     },
@@ -552,7 +621,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
 
   /**
    * Camera updates are not recorded in undo history.
-   * Pan/zoom are continuous interactions and would crowd out meaningful edits.
+   * Drag/zoom are continuous interactions and would crowd out meaningful edits.
    */
   const setCamera = useCallback<EditorStateApi["setCamera"]>(
     (updater) => {

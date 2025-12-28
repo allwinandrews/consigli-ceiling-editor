@@ -380,6 +380,130 @@ export function CanvasStage() {
     invalidDragRef.current = null;
   }, [state.tool]);
 
+  /**
+   * Ensures a target cell is visible. If not, the camera is updated to bring it
+   * near the center of the viewport and (optionally) bumped to a minimum zoom.
+   */
+  const focusCellInViewIfNeeded = (args: {
+    canvas: HTMLCanvasElement;
+    cell: GridCell;
+    grid: typeof state.grid;
+  }) => {
+    const { canvas, cell, grid } = args;
+
+    if (isPanningRef.current || dragRef.current || invalidDragRef.current) {
+      return;
+    }
+
+    if (!isWithinGrid(cell, grid)) return;
+
+    const cellSize = DEFAULT_CELL_SIZE;
+
+    const bounds = getVisibleCellBounds({
+      canvasWidth: canvas.width,
+      canvasHeight: canvas.height,
+      camera: cameraRef.current,
+      grid,
+      cellSize,
+    });
+
+    const pad = 1;
+    const isVisible =
+      cell.x >= bounds.minX + pad &&
+      cell.x <= bounds.maxX - pad &&
+      cell.y >= bounds.minY + pad &&
+      cell.y <= bounds.maxY - pad;
+
+    if (isVisible) return;
+
+    const current = cameraRef.current;
+    const targetZoom = clampZoom(Math.max(current.zoom, 1.2));
+
+    const worldX = (cell.x + 0.5) * cellSize;
+    const worldY = (cell.y + 0.5) * cellSize;
+
+    const next: Camera = {
+      zoom: targetZoom,
+      panX: canvas.width / 2 - worldX * targetZoom,
+      panY: canvas.height / 2 - worldY * targetZoom,
+    };
+
+    cameraRef.current = next;
+    setCamera(() => next);
+  };
+
+  const selectedInvalidKey = useMemo(() => {
+    return getSelectedInvalidKeyFromState(state);
+  }, [state]);
+
+  /**
+   * Auto-focus is only triggered when the selection target changes.
+   * This prevents the camera snapping back after user-driven pan/zoom.
+   */
+  const lastFocusTargetRef = useRef<string | null>(null);
+
+  const focusTarget = useMemo(() => {
+    if (state.selectedComponentId) {
+      const comp = state.components.find(
+        (c) => c.id === state.selectedComponentId
+      );
+      if (!comp) return null;
+      return `C:${comp.id}:${toCellKey(comp.cell)}`;
+    }
+
+    if (selectedInvalidKey) return `I:${selectedInvalidKey}`;
+
+    return null;
+  }, [state.selectedComponentId, state.components, selectedInvalidKey]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    if (!focusTarget) {
+      lastFocusTargetRef.current = null;
+      return;
+    }
+
+    if (lastFocusTargetRef.current === focusTarget) return;
+    lastFocusTargetRef.current = focusTarget;
+
+    if (focusTarget.startsWith("C:")) {
+      const comp = state.components.find(
+        (c) => c.id === state.selectedComponentId
+      );
+      if (!comp) return;
+
+      focusCellInViewIfNeeded({
+        canvas,
+        cell: comp.cell,
+        grid: state.grid,
+      });
+
+      return;
+    }
+
+    if (focusTarget.startsWith("I:")) {
+      const key = selectedInvalidKey;
+      if (!key) return;
+
+      const parsed = parseKey(key);
+      if (!parsed) return;
+
+      focusCellInViewIfNeeded({
+        canvas,
+        cell: parsed,
+        grid: state.grid,
+      });
+    }
+  }, [
+    focusTarget,
+    state.components,
+    state.selectedComponentId,
+    selectedInvalidKey,
+    state.grid,
+  ]);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -596,7 +720,7 @@ export function CanvasStage() {
     const draw = () => {
       const s = stateRef.current;
       const { panX, panY, zoom } = cameraRef.current;
-      const selectedInvalidKey = getSelectedInvalidKeyFromState(s);
+      const selectedInvalidKey2 = getSelectedInvalidKeyFromState(s);
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = "#f5f5f5";
@@ -654,8 +778,8 @@ export function CanvasStage() {
           }
         }
 
-        if (selectedInvalidKey && s.invalidCells.has(selectedInvalidKey)) {
-          const parsed = parseKey(selectedInvalidKey);
+        if (selectedInvalidKey2 && s.invalidCells.has(selectedInvalidKey2)) {
+          const parsed = parseKey(selectedInvalidKey2);
           if (parsed) {
             const { x, y } = parsed;
             if (x >= minX && x <= maxX && y >= minY && y <= maxY) {
@@ -896,13 +1020,13 @@ export function CanvasStage() {
           return next;
         });
 
-        const selectedInvalidKey = getSelectedInvalidKeyFromState(s);
-        if (selectedInvalidKey === k) {
+        const selectedInvalidKey3 = getSelectedInvalidKeyFromState(s);
+        if (selectedInvalidKey3 === k) {
           setState((prev) => ({ ...prev, selectedInvalidCellKey: null }));
         }
 
-        if (selectedInvalidKey)
-          clearInvalidSelectionIfMissing(selectedInvalidKey);
+        if (selectedInvalidKey3)
+          clearInvalidSelectionIfMissing(selectedInvalidKey3);
       }
     };
 
@@ -944,10 +1068,6 @@ export function CanvasStage() {
         return;
       }
 
-      /**
-       * Hover feedback is useful in every tool, but we skip hover recalculation
-       * during captured pointer interactions handled above.
-       */
       const cell = hoverRef.current.hoveredCell;
       const changed = updateHoverTargets(cell);
 
