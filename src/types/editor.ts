@@ -1,5 +1,3 @@
-// src/types/editor.ts
-
 /**
  * Core domain types for the ceiling grid editor.
  *
@@ -45,7 +43,7 @@ export type GridCell = {
  * If new component types are added, update:
  * - Toolbar UI
  * - CanvasStage rendering logic
- * - Auto-naming rules
+ * - Naming rules (prefix + sequence)
  */
 export type ComponentType =
   | "LIGHT"
@@ -56,19 +54,39 @@ export type ComponentType =
 /**
  * A component placed on the grid.
  *
- * Each placed component:
- * - Has a globally unique id
- * - Has a fixed type
- * - Occupies exactly one grid cell
+ * Naming model:
+ * - `autoName` is assigned once at creation time (e.g. "L1", "AS2") and persisted.
+ *   It must not be recomputed from the current list order, otherwise deletes would
+ *   cause remaining components to be renumbered.
+ * - `label` is an optional user override shown in the UI.
+ *   If present, it takes precedence over `autoName`.
  */
 export type PlacedComponent = {
+  /**
+   * Globally unique identifier for this placed component.
+   * Used for selection, drag, and persistence.
+   */
   id: string;
+
+  /**
+   * Component category (drives rendering and naming prefix).
+   */
   type: ComponentType;
+
+  /**
+   * Grid cell occupied by this component (one component per cell).
+   */
   cell: GridCell;
 
   /**
+   * Stable default name assigned when the component is created.
+   * Example: "L1", "AS1", "AR3", "SD2".
+   */
+  autoName: string;
+
+  /**
    * Optional user-defined label.
-   * When missing, the UI auto-generates names like L1, AS2, etc.
+   * When present, the UI should display this instead of `autoName`.
    */
   label?: string;
 };

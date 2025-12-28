@@ -10,25 +10,34 @@ import {
 import { createPortal } from "react-dom";
 
 import { useEditorState } from "../state/useEditorState";
-import type { ComponentType, EditorTool } from "../types/editor";
+import type {
+  ComponentType,
+  EditorTool,
+  PlacedComponent,
+} from "../types/editor";
 
 /**
- * The set of tools the editor supports.
+ * Toolbar UI for the ceiling editor.
  *
- * These values must match what CanvasStage expects, because CanvasStage
- * decides how pointer/drag interactions behave based on the active tool.
+ * Responsibilities:
+ * - Grid sizing controls (rows/cols) and apply validation
+ * - Tool selection (PAN / SELECT / PLACE / ERASE)
+ * - Component palette (component cards + invalid-cell mode)
+ * - Status panel (what exists, where it is, select/rename/delete)
+ * - High-level actions (save, undo, clear)
+ *
+ * This component is intentionally "stateful UI":
+ * - It reads editor state from context
+ * - It holds transient UI state (accordion open/closed, rename drafts, filters)
+ * - It writes changes back through editor actions (setState / setGrid / undo / saveLayout)
  */
 const TOOLS: EditorTool[] = ["PAN", "SELECT", "PLACE", "ERASE"];
 
 /**
- * A single shared color system for the entire app.
+ * Shared semantic colors for the editor.
  *
- * Keeping these colors consistent across:
- * - Toolbar cards and badges
- * - Status group headers
- * - Canvas hover/selection accents
- *
- * makes it much easier for a reviewer to understand what they’re looking at.
+ * Keeping a single palette across the toolbar and canvas makes the interface
+ * easier to learn: the same type always maps to the same highlight color.
  */
 const TYPE_COLOR: Record<ComponentType | "INVALID_CELL", string> = {
   LIGHT: "#f59e0b", // amber
@@ -41,11 +50,11 @@ const TYPE_COLOR: Record<ComponentType | "INVALID_CELL", string> = {
 /**
  * Component palette shown as clickable cards.
  *
- * Each entry includes:
- * - label: human readable name
- * - value: enum value stored in state
- * - short: prefix used for auto-generated names (L1, AS1, ...)
- * - icon: small inline SVG rendered on the card
+ * Each definition provides:
+ * - label: user-facing name
+ * - value: domain type stored in state
+ * - short: prefix used when the app generates stable default names (L1, AS1, ...)
+ * - icon: small inline SVG used in the card
  */
 const COMPONENTS: {
   label: string;
@@ -120,29 +129,29 @@ type FilterValue = "ALL" | ComponentType | "INVALID_CELL";
 type StatusGroupType = ComponentType | "INVALID_CELL";
 
 /**
- * Normalized item structure used by the Status section.
+ * Normalized row used by the Status panel.
  *
- * We merge two different “things” into one list:
- * - placed components (identified by component id)
- * - invalid cells (identified by "x,y" key)
+ * We merge two concepts into a single list model:
+ * - placed components (id = component id)
+ * - invalid cells (id = "x,y" cell key)
  *
- * This lets the Status UI render and manage both in a consistent way.
+ * That allows the UI to:
+ * - render consistent rows
+ * - apply selection logic consistently
+ * - provide common actions (rename/delete) with minimal branching
  */
 type ListItem = {
-  id: string; // component id OR invalid cell key ("x,y")
-  name: string; // display name (custom label preferred, otherwise autoName)
-  autoName: string; // generated name (L1, AS1, IV1, ...)
+  id: string;
+  name: string;
+  autoName: string;
   x: number;
   y: number;
   kind: "COMPONENT" | "INVALID_CELL";
 };
 
 /**
- * Clamp a numeric value to an integer range.
- *
- * Used for grid sizing:
- * - users can type anything in the input
- * - we normalize it to safe bounds before calling setGrid(...)
+ * Clamp and normalize numeric user input.
+ * Inputs can be empty or invalid while typing; we only enforce bounds on apply.
  */
 function clampInt(value: number, min: number, max: number) {
   if (Number.isNaN(value)) return min;
@@ -150,10 +159,10 @@ function clampInt(value: number, min: number, max: number) {
 }
 
 /**
- * Returns a stable portal mount (document.body) for tooltips.
+ * Returns the portal mount used by tooltips.
  *
- * Tooltips rendered inside the toolbar would often be clipped because
- * the toolbar is scrollable (overflow). Portalling to body avoids that.
+ * Tooltips must escape the toolbar overflow clipping; portalling to body avoids
+ * tooltips being cut off by scroll containers.
  */
 function useBodyPortal(): HTMLElement | null {
   const [body] = useState<HTMLElement | null>(() => {
@@ -163,11 +172,8 @@ function useBodyPortal(): HTMLElement | null {
 }
 
 /**
- * Minimal “info” icon used as the tooltip anchor.
- *
- * We keep this as a component so:
- * - styles are consistent everywhere
- * - it remains keyboard focusable via Tooltip wrapper
+ * Minimal "info" badge used as tooltip anchor.
+ * We keep it keyboard focusable via the Tooltip wrapper span.
  */
 function InfoIcon({ size = 18 }: { size?: number }) {
   return (
@@ -196,8 +202,8 @@ function InfoIcon({ size = 18 }: { size?: number }) {
 }
 
 /**
- * Chevron used by accordion section headers.
- * Rotation indicates open/closed state.
+ * Chevron used by accordion headers.
+ * Rotation indicates the open/closed state.
  */
 function ChevronIcon({ size = 16, open }: { size?: number; open: boolean }) {
   return (
@@ -225,7 +231,7 @@ function ChevronIcon({ size = 16, open }: { size?: number; open: boolean }) {
 }
 
 /**
- * Trash icon for delete actions inside the Status list.
+ * Trash icon used for delete actions in the Status panel.
  */
 function TrashIcon({ size = 16 }: { size?: number }) {
   return (
@@ -251,11 +257,11 @@ function TrashIcon({ size = 16 }: { size?: number }) {
 /**
  * Tooltip
  *
- * Dependency-free tooltip implementation:
- * - renders into a portal (avoids overflow clipping)
- * - supports mouse hover and keyboard focus
- * - closes on Escape
- * - uses fixed positioning so it stays anchored during scrolling
+ * Lightweight, dependency-free tooltip:
+ * - Portals to body to avoid overflow clipping
+ * - Opens on hover and focus
+ * - Closes on mouse leave, blur, or Escape
+ * - Uses fixed positioning so it stays anchored while scrolling
  */
 function Tooltip({
   text,
@@ -275,7 +281,6 @@ function Tooltip({
     top: 0,
   });
 
-  // Computes tooltip position relative to the anchor and clamps it on-screen.
   const updatePos = () => {
     const el = anchorRef.current;
     if (!el) return;
@@ -293,7 +298,6 @@ function Tooltip({
     setPos({ left, top });
   };
 
-  // While tooltip is open, keep it aligned during scroll/resize.
   useEffect(() => {
     if (!open) return;
 
@@ -331,7 +335,7 @@ function Tooltip({
     whiteSpace: "pre-line",
     boxShadow: "0 12px 24px rgba(0,0,0,0.22)",
     zIndex: 9999,
-    pointerEvents: "none", // tooltip must never block clicks
+    pointerEvents: "none",
   };
 
   return (
@@ -361,7 +365,8 @@ function Tooltip({
 }
 
 /**
- * Small color marker used for quick visual grouping in the UI.
+ * Small color marker used to visually reinforce grouping.
+ * This is used in both headers and list rows.
  */
 function ColorSwatch({ color, size = 14 }: { color: string; size?: number }) {
   return (
@@ -382,14 +387,8 @@ function ColorSwatch({ color, size = 14 }: { color: string; size?: number }) {
 /**
  * AccordionSection
  *
- * A reusable “collapsible card” used throughout the toolbar so the UI
- * stays compact and scannable:
- * - Grid sizing
- * - Tool selection
- * - Component palette
- * - Status list
- *
- * The header button controls a region with proper ARIA wiring.
+ * Reusable collapsible card used throughout the toolbar for a compact layout.
+ * ARIA wiring ensures the header controls a region for accessibility.
  */
 function AccordionSection({
   id,
@@ -488,7 +487,6 @@ function AccordionSection({
 
             {tooltip ? (
               <Tooltip text={tooltip}>
-                {/* Wrapper span ensures tooltip has a reliable inline anchor */}
                 <span>
                   <InfoIcon />
                 </span>
@@ -525,11 +523,9 @@ function AccordionSection({
 }
 
 /**
- * Safe readers for editor state fields.
- *
- * Even though the current EditorState type includes these properties,
- * these helpers keep us resilient if the state shape changes in the future
- * or if older persisted data is loaded.
+ * Defensive readers for state fields.
+ * These keep the toolbar resilient if persisted data or future schema changes
+ * temporarily omit newer fields.
  */
 function getPlaceModeFromState(state: unknown): PlaceMode {
   if (state && typeof state === "object" && "placeMode" in state) {
@@ -558,8 +554,8 @@ function getInvalidLabelsFromState(state: unknown): Record<string, string> {
 }
 
 /**
- * Parse invalid cell key "x,y" into numeric coordinates.
- * Returns null for malformed keys.
+ * Parse an invalid cell key "x,y" into coordinates.
+ * Used by the Status panel to show the cell position.
  */
 function parseCellKey(key: string): { x: number; y: number } | null {
   const [xs, ys] = key.split(",");
@@ -570,44 +566,34 @@ function parseCellKey(key: string): { x: number; y: number } | null {
   return { x: Math.floor(x), y: Math.floor(y) };
 }
 
+/**
+ * Returns the grouping color for status sections.
+ * This keeps the status UI aligned with the palette used elsewhere.
+ */
 function groupColor(type: StatusGroupType): string {
   return TYPE_COLOR[type];
 }
 
 type ToolbarProps = {
-  // Used to collapse/expand the sidebar (Toolbar wrapper lives outside this file).
   onToggleSidebar: () => void;
-
-  /**
-   * Route-aware save handler.
-   *
-   * EditorPage owns URL rules:
-   * - "/"          => create a new layout id and navigate to "/saved/:id"
-   * - "/saved/:id" => overwrite that layout id
-   *
-   * Toolbar only triggers the action.
-   */
   onSaveLayout?: () => void;
-
-  /**
-   * Allows the parent to disable Save (for example, when there's nothing to save).
-   * If not provided, Save stays enabled.
-   */
   canSaveLayout?: boolean;
 };
 
 /**
- * Toolbar
- *
- * Primary control surface for the editor:
- * - Change grid dimensions
- * - Choose tool (PAN/SELECT/PLACE/ERASE)
- * - Select component type to place
- * - Switch PLACE mode between components and invalid cells
- * - View and manage all placed items (Status list)
- * - Clear selections or clear all
- * - Undo last meaningful edit
+ * Returns the display name for a placed component.
+ * The user's label (if present) takes precedence over the stable autoName.
  */
+function getComponentDisplayName(c: PlacedComponent): {
+  name: string;
+  autoName: string;
+} {
+  const autoName = c.autoName;
+  const custom = (c as { label?: string }).label?.trim();
+  const name = custom && custom.length > 0 ? custom : autoName;
+  return { name, autoName };
+}
+
 export function Toolbar({
   onToggleSidebar,
   onSaveLayout,
@@ -622,34 +608,36 @@ export function Toolbar({
     setSelectedComponentId,
     undo,
     canUndo,
-
-    // Fallback save for cases where Toolbar is rendered without route logic.
     saveLayout,
   } = useEditorState();
 
-  // Keep grid inputs as strings so the user can type freely (including partial numbers).
+  /**
+   * Grid inputs are kept local so users can type freely without immediately
+   * changing the grid. We validate and apply only when the user clicks Apply.
+   */
   const [colsInput, setColsInput] = useState<string>(String(state.grid.cols));
   const [rowsInput, setRowsInput] = useState<string>(String(state.grid.rows));
 
-  // Status filter lets you focus on a single type or just invalid cells.
+  /**
+   * Status filter and rename state are UI-only.
+   * They do not belong in EditorState because they don't affect layout output.
+   */
   const [statusFilter, setStatusFilter] = useState<FilterValue>("ALL");
-
-  // Rename UI state is local to the toolbar so we can keep it responsive.
   const [renameDrafts, setRenameDrafts] = useState<Record<string, string>>({});
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
 
-  // Accordion open/close state.
+  /**
+   * Accordion open/closed state is UI-only and local to the toolbar.
+   */
   const [openGrid, setOpenGrid] = useState(true);
   const [openTool, setOpenTool] = useState(true);
   const [openComponents, setOpenComponents] = useState(true);
   const [openStatus, setOpenStatus] = useState(true);
 
-  // Read optional selection/label fields from state.
   const selectedInvalidKey = getSelectedInvalidKeyFromState(state);
   const invalidLabels = getInvalidLabelsFromState(state);
 
-  // Used to enable/disable parts of the UI (SELECT/ERASE are pointless when nothing exists).
   const placedCount = state.components.length;
   const invalidCount = state.invalidCells.size;
   const totalPlaced = placedCount + invalidCount;
@@ -658,14 +646,20 @@ export function Toolbar({
   const placeMode = getPlaceModeFromState(state);
   const isInvalidModeActive = placeMode === "INVALID_CELL";
 
-  // Inputs are “valid enough” to apply if they parse to numbers (final clamp happens on apply).
+  /**
+   * Determines if the "Apply" grid button should be enabled.
+   * We only require numeric parseability; clamping happens when applied.
+   */
   const canApplyGrid = useMemo(() => {
     const cols = Number(colsInput);
     const rows = Number(rowsInput);
     return Number.isFinite(cols) && Number.isFinite(rows);
   }, [colsInput, rowsInput]);
 
-  // Apply grid resize via provider action, then reflect normalized values back into inputs.
+  /**
+   * Apply grid size after normalizing user input.
+   * The provider handles trimming out-of-bounds components and invalid cells.
+   */
   const applyGridSize = () => {
     const cols = clampInt(Number(colsInput), 1, 1000);
     const rows = clampInt(Number(rowsInput), 1, 1000);
@@ -676,10 +670,8 @@ export function Toolbar({
   };
 
   /**
-   * Delete a single item from Status list.
-   *
-   * Components are removed from `components`.
-   * Invalid cells are removed from `invalidCells` and their label removed from `invalidCellLabels`.
+   * Deletes either a component or an invalid cell from the document.
+   * Uses a confirmation prompt since this is destructive.
    */
   const deleteItem = (it: ListItem) => {
     const ok = window.confirm(`Delete "${it.name}"?`);
@@ -719,7 +711,10 @@ export function Toolbar({
     });
   };
 
-  // Reset the entire layout (but does not affect saved layouts storage).
+  /**
+   * Clears the entire layout.
+   * This keeps grid and camera intact but removes all placed items and labels.
+   */
   const clearAll = () => {
     setState((prev) => ({
       ...prev,
@@ -730,13 +725,15 @@ export function Toolbar({
       invalidCellLabels: {},
     }));
 
-    // Also reset rename UI so we don’t show drafts for items that no longer exist.
     setRenameDrafts({});
     setRenamingId(null);
     setRenameError(null);
   };
 
-  // Clear only the current selection.
+  /**
+   * Clears any selection and exits rename mode.
+   * Selection exists in EditorState because it affects how the canvas behaves.
+   */
   const clearSelection = () => {
     setSelectedComponentId(null);
 
@@ -748,8 +745,6 @@ export function Toolbar({
     setRenamingId(null);
     setRenameError(null);
   };
-
-  // Shared UI styles -----------------------------------------------------------
 
   const inputStyle: CSSProperties = {
     width: "100%",
@@ -789,7 +784,10 @@ export function Toolbar({
     flex: "0 0 auto",
   };
 
-  // If parent doesn’t provide a value, treat Save as enabled.
+  /**
+   * Save enablement can be driven by the parent (page) or default to enabled.
+   * This is useful if the list page wants to disable save while a dialog is open.
+   */
   const saveEnabled = canSaveLayout ?? true;
 
   const saveButton: CSSProperties = {
@@ -809,9 +807,9 @@ export function Toolbar({
     whiteSpace: "nowrap",
   };
 
-  // Derived data ---------------------------------------------------------------
-
-  // Count how many components of each type exist (used in palette + filter hinting).
+  /**
+   * Counts per component type for the palette cards and the status header.
+   */
   const countsByType = useMemo(() => {
     const map: Record<ComponentType, number> = {
       LIGHT: 0,
@@ -824,53 +822,20 @@ export function Toolbar({
   }, [state.components]);
 
   /**
-   * Build a case-insensitive set of all names currently in use.
+   * Build a case-insensitive set of all current display names.
    *
-   * This is used to enforce unique names during rename.
-   * The uniqueness rule applies across:
-   * - component labels (custom or auto)
-   * - invalid cell labels (custom or auto)
+   * Used to enforce uniqueness during rename across:
+   * - components (label or autoName)
+   * - invalid cells (label or derived IV# name)
    */
   const takenNames = useMemo(() => {
     const set = new Set<string>();
 
-    // Group component ids by type so we can assign stable auto names per type.
-    const groups: Record<ComponentType, { id: string; autoName: string }[]> = {
-      LIGHT: [],
-      AIR_SUPPLY: [],
-      AIR_RETURN: [],
-      SMOKE_DETECTOR: [],
-    };
-
     for (const c of state.components) {
-      groups[c.type].push({ id: c.id, autoName: "" });
+      const { name } = getComponentDisplayName(c);
+      set.add(name.toLowerCase());
     }
 
-    // Deterministic auto names: sort by id, then assign 1..n.
-    for (const def of COMPONENTS) {
-      const arr = groups[def.value]
-        .slice()
-        .sort((a, b) => a.id.localeCompare(b.id));
-      for (let i = 0; i < arr.length; i += 1) {
-        arr[i].autoName = `${def.short}${i + 1}`;
-      }
-      groups[def.value] = arr;
-    }
-
-    const autoById = new Map<string, string>();
-    for (const def of COMPONENTS) {
-      for (const it of groups[def.value]) autoById.set(it.id, it.autoName);
-    }
-
-    // Add component display names.
-    for (const c of state.components) {
-      const custom = (c as { label?: string }).label?.trim();
-      const auto = autoById.get(c.id) ?? "UNKNOWN";
-      const display = custom && custom.length > 0 ? custom : auto;
-      set.add(display.toLowerCase());
-    }
-
-    // Add invalid cell display names.
     const invalidKeys = Array.from(state.invalidCells)
       .slice()
       .sort((a, b) => a.localeCompare(b));
@@ -887,11 +852,13 @@ export function Toolbar({
   }, [state.components, state.invalidCells, invalidLabels]);
 
   /**
-   * Build the grouped “Status list”.
+   * Builds the grouped "Status list".
    *
-   * - Components are grouped by type and assigned auto names (L1, AS1, ...)
-   * - Invalid cells are grouped under INVALID_CELL and assigned (IV1, IV2, ...)
-   * - We keep coordinates so clicking an item can highlight/select it on the canvas.
+   * - Components are grouped by type and sorted by stable autoName.
+   * - Invalid cells are grouped under INVALID_CELL and named IV# based on key order.
+   *
+   * The derived IV# scheme is stable as long as the key ordering is stable.
+   * Custom labels are stored in state and override the derived name.
    */
   const placedList = useMemo(() => {
     const groups: Record<StatusGroupType, ListItem[]> = {
@@ -902,34 +869,24 @@ export function Toolbar({
       INVALID_CELL: [],
     };
 
-    // Build component items first (autoName is assigned after sorting).
     for (const c of state.components) {
-      const custom = (c as { label?: string }).label;
+      const { name, autoName } = getComponentDisplayName(c);
       groups[c.type].push({
         id: c.id,
-        name: custom?.trim() ?? "",
+        name,
+        autoName,
         x: c.cell.x,
         y: c.cell.y,
-        autoName: "",
         kind: "COMPONENT",
       });
     }
 
-    // Assign deterministic auto names per component group.
     for (const def of COMPONENTS) {
-      const arr = groups[def.value]
+      groups[def.value] = groups[def.value]
         .slice()
-        .sort((a, b) => a.id.localeCompare(b.id));
-
-      for (let i = 0; i < arr.length; i += 1) {
-        arr[i].autoName = `${def.short}${i + 1}`;
-        if (!arr[i].name) arr[i].name = arr[i].autoName;
-      }
-
-      groups[def.value] = arr;
+        .sort((a, b) => a.autoName.localeCompare(b.autoName));
     }
 
-    // Invalid cells: stable ordering by key ensures IV numbers don’t jump around randomly.
     const invalidKeys = Array.from(state.invalidCells)
       .slice()
       .sort((a, b) => a.localeCompare(b));
@@ -957,7 +914,6 @@ export function Toolbar({
     return groups;
   }, [state.components, state.invalidCells, invalidLabels]);
 
-  // Used for hint text when a filter is active.
   const filteredPlacedCount = useMemo(() => {
     if (statusFilter === "ALL") return totalPlaced;
     if (statusFilter === "INVALID_CELL") return invalidCount;
@@ -965,8 +921,8 @@ export function Toolbar({
   }, [statusFilter, totalPlaced, invalidCount, countsByType]);
 
   /**
-   * UX rule: SELECT and ERASE do nothing useful when the grid is empty.
-   * We disable them and explain why with a tooltip.
+   * Tools like SELECT/ERASE don't make sense when there is nothing to interact with.
+   * Returning a reason string enables disabled tooltips.
    */
   const getToolDisabledReason = (tool: EditorTool): string | null => {
     if ((tool === "SELECT" || tool === "ERASE") && !hasAnyPlaced) {
@@ -975,11 +931,6 @@ export function Toolbar({
     return null;
   };
 
-  /**
-   * Renders one tool button with:
-   * - active styling
-   * - disabled handling + tooltip
-   */
   const renderToolButton = (tool: EditorTool) => {
     const active = state.tool === tool;
     const disabledReason = getToolDisabledReason(tool);
@@ -1013,7 +964,6 @@ export function Toolbar({
       </button>
     );
 
-    // Disabled buttons can lose hover events; wrap so Tooltip still works reliably.
     if (!isDisabled) return btn;
 
     return (
@@ -1023,40 +973,60 @@ export function Toolbar({
     );
   };
 
-  // Rename flow ----------------------------------------------------------------
-
-  // Enter rename mode for the given item.
+  /**
+   * Enters rename mode for the given item id.
+   * Draft text is stored separately so users can cancel without side effects.
+   */
   const startRename = (id: string, currentName: string) => {
     setRenamingId(id);
     setRenameError(null);
 
-    // Only set the initial draft once so typing isn't overwritten by rerenders.
     setRenameDrafts((prev) => ({
       ...prev,
       [id]: prev[id] ?? currentName,
     }));
   };
 
-  // Exit rename mode without saving.
   const cancelRename = () => {
     setRenamingId(null);
     setRenameError(null);
   };
 
   /**
-   * Persist a renamed label.
+   * Returns the current display name for an item.
+   * This is used to detect rename no-ops (case-insensitive).
+   */
+  const getCurrentDisplayNameForId = (
+    group: StatusGroupType,
+    id: string
+  ): string => {
+    if (group === "INVALID_CELL") {
+      const keys = Array.from(state.invalidCells)
+        .slice()
+        .sort((a, b) => a.localeCompare(b));
+      const index = keys.indexOf(id);
+      const autoName = index >= 0 ? `IV${index + 1}` : "IV";
+      const custom = invalidLabels[id]?.trim();
+      return custom && custom.length > 0 ? custom : autoName;
+    }
+
+    const c = state.components.find((x) => x.id === id);
+    if (!c) return "";
+    return getComponentDisplayName(c).name;
+  };
+
+  /**
+   * Commits a rename.
    *
    * Rules:
-   * - Blank name => clear custom label (falls back to autoName)
-   * - Non-blank => must be unique across all items
-   * - Components store label on the component object
-   * - Invalid cells store label in `invalidCellLabels["x,y"]`
+   * - empty input clears the custom label (revert to autoName/IV#)
+   * - unchanged (case-insensitive) input exits rename without writing state
+   * - duplicate names are rejected across all items
    */
   const commitRename = (group: StatusGroupType, id: string) => {
     const raw = renameDrafts[id] ?? "";
     const next = raw.trim();
 
-    // Blank means: remove custom label and let auto-name be displayed instead.
     if (next.length === 0) {
       if (group === "INVALID_CELL") {
         setState((prev) => {
@@ -1085,29 +1055,18 @@ export function Toolbar({
       return;
     }
 
-    // If name is effectively unchanged, treat it as a no-op.
-    const currentDisplay =
-      group === "INVALID_CELL"
-        ? invalidLabels[id]?.trim() ?? ""
-        : (
-            state.components.find((c) => c.id === id) as
-              | { label?: string }
-              | undefined
-          )?.label?.trim() ?? "";
-
+    const currentDisplay = getCurrentDisplayNameForId(group, id);
     if (currentDisplay && currentDisplay.toLowerCase() === next.toLowerCase()) {
       setRenamingId(null);
       setRenameError(null);
       return;
     }
 
-    // Enforce uniqueness across all items.
     if (takenNames.has(next.toLowerCase())) {
       setRenameError("Name already exists. Choose a unique name.");
       return;
     }
 
-    // Persist rename to the correct storage location.
     if (group === "INVALID_CELL") {
       setState((prev) => {
         const current = getInvalidLabelsFromState(prev);
@@ -1132,8 +1091,6 @@ export function Toolbar({
     setRenamingId(null);
     setRenameError(null);
   };
-
-  // Rename UI styles -----------------------------------------------------------
 
   const renamePanelStyle: CSSProperties = {
     marginTop: 8,
@@ -1190,9 +1147,11 @@ export function Toolbar({
   };
 
   /**
-   * When PLACE tool is active, placeMode decides what the click does:
-   * - COMPONENT: add the selected component type
-   * - INVALID_CELL: toggle invalid/valid for that cell
+   * PLACE tool has two behaviors:
+   * - placing components
+   * - toggling invalid cells
+   *
+   * placeMode lives in EditorState so CanvasStage can render correct affordances.
    */
   const setPlaceMode = (mode: PlaceMode) => {
     setState((prev) => ({
@@ -1201,11 +1160,6 @@ export function Toolbar({
     }));
   };
 
-  /**
-   * Determines which status groups are rendered:
-   * - "ALL" => show all groups in a stable order
-   * - otherwise => show only the matching group
-   */
   const listForRender = useMemo(() => {
     const order: StatusGroupType[] = [
       "LIGHT",
@@ -1231,11 +1185,11 @@ export function Toolbar({
   }, [placedList, statusFilter]);
 
   /**
-   * Clicking an item in Status:
-   * - selects it
-   * - switches to SELECT tool
+   * Selecting a list item drives selection on the canvas:
+   * - component: selectedComponentId
+   * - invalid cell: selectedInvalidCellKey
    *
-   * This keeps the workflow fast: click in list → drag on grid immediately.
+   * We force SELECT tool so the canvas behavior matches user intent.
    */
   const selectListItem = (it: ListItem) => {
     setRenameError(null);
@@ -1259,9 +1213,8 @@ export function Toolbar({
   };
 
   /**
-   * Save button behavior:
-   * - If the page provides route-aware saving, use it.
-   * - Otherwise use provider saveLayout() as a fallback.
+   * Save behavior can be overridden by the parent page (for example, to show a dialog).
+   * If not provided, we call the provider's saveLayout().
    */
   const handleSave = () => {
     if (!saveEnabled) return;
@@ -1273,8 +1226,6 @@ export function Toolbar({
 
     saveLayout();
   };
-
-  // Render ---------------------------------------------------------------------
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -1290,9 +1241,6 @@ export function Toolbar({
           </div>
         </div>
 
-        {/* Header actions:
-            - Save: persists current state (new or overwrite depending on route)
-            - ×: collapses the toolbar panel */}
         <div style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
           <button
             type="button"
@@ -1317,8 +1265,6 @@ export function Toolbar({
         </div>
       </div>
 
-      {/* Grid sizing controls:
-          Updates the logical grid and automatically trims anything out of bounds. */}
       <AccordionSection
         id="grid"
         title="Room Ceiling size"
@@ -1363,13 +1309,17 @@ export function Toolbar({
           onClick={applyGridSize}
           disabled={!canApplyGrid}
           style={{
-            ...baseButton,
+            padding: "10px 10px",
+            fontSize: 13,
+            borderRadius: 12,
+            border: "1px solid #e5e7eb",
             width: "100%",
             marginTop: 10,
             background: canApplyGrid ? "#111827" : "#f3f4f6",
             color: canApplyGrid ? "#ffffff" : "#9ca3af",
             borderColor: canApplyGrid ? "#111827" : "#e5e7eb",
             cursor: canApplyGrid ? "pointer" : "not-allowed",
+            fontWeight: 800,
           }}
         >
           Apply
@@ -1380,8 +1330,6 @@ export function Toolbar({
         </div>
       </AccordionSection>
 
-      {/* Tool selection:
-          Disabled rules ensure users don’t pick tools that would do nothing. */}
       <AccordionSection
         id="tool"
         title="Tool"
@@ -1407,11 +1355,6 @@ export function Toolbar({
         </div>
       </AccordionSection>
 
-      {/* Component palette:
-          Clicking a card:
-          - sets PLACE mode to COMPONENT
-          - selects the active component type
-          - switches tool to PLACE for immediate placement */}
       <AccordionSection
         id="components"
         title="Components"
@@ -1487,8 +1430,6 @@ export function Toolbar({
             );
           })}
 
-          {/* Invalid cell “palette card”:
-              Activates invalid placement mode and switches to PLACE tool. */}
           <button
             type="button"
             onClick={() => {
@@ -1548,12 +1489,6 @@ export function Toolbar({
         </div>
       </AccordionSection>
 
-      {/* Status list:
-          This is where users can:
-          - see everything placed
-          - filter by type
-          - click to select
-          - rename and delete items */}
       <AccordionSection
         id="status"
         title="Status"
@@ -1864,9 +1799,6 @@ export function Toolbar({
           )}
         </div>
 
-        {/* Status footer actions:
-            - Clear all: wipe the current working layout
-            - Unselect: remove the current highlight without deleting anything */}
         <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
           <button
             type="button"
@@ -1910,8 +1842,6 @@ export function Toolbar({
           </button>
         </div>
 
-        {/* Undo button:
-            Only enabled when provider has history available. */}
         <button
           type="button"
           onClick={undo}

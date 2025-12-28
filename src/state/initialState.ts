@@ -10,7 +10,7 @@ import type { EditorState } from "../types/editor";
 const DEFAULT_GRID = {
   cols: 20,
   rows: 20,
-};
+} as const;
 
 /**
  * Initial editor state.
