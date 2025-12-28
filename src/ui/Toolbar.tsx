@@ -26,10 +26,9 @@ import type {
  * - Status panel (what exists, where it is, select/rename/delete)
  * - High-level actions (save, undo, clear)
  *
- * This component is intentionally "stateful UI":
- * - It reads editor state from context
- * - It holds transient UI state (accordion open/closed, rename drafts, filters)
- * - It writes changes back through editor actions (setState / setGrid / undo / saveLayout)
+ * This component keeps some UI-only state (input drafts, accordion open/closed).
+ * When external state changes (e.g., loading a saved layout), we sync drafts so
+ * the toolbar always reflects the currently active editor state.
  */
 const TOOLS: EditorTool[] = ["PAN", "SELECT", "PLACE", "ERASE"];
 
@@ -137,11 +136,6 @@ type StatusGroupType = ComponentType | "INVALID_CELL";
  * We merge two concepts into a single list model:
  * - placed components (id = component id)
  * - invalid cells (id = "x,y" cell key)
- *
- * That allows the UI to:
- * - render consistent rows
- * - apply selection logic consistently
- * - provide common actions (rename/delete) with minimal branching
  */
 type ListItem = {
   id: string;
@@ -616,12 +610,27 @@ export function Toolbar({
 
   /**
    * Grid inputs are kept local so users can type freely without immediately
-   * changing the grid. We validate and apply only when the user clicks Apply.
+   * changing the grid. We sync them when the underlying state changes
+   * (e.g., loading a saved layout) as long as the user is not actively editing.
    */
   const [colsInput, setColsInput] = useState<string>(String(state.grid.cols));
   const [rowsInput, setRowsInput] = useState<string>(String(state.grid.rows));
+  const gridInputsEditingRef = useRef(false);
 
   const [gridError, setGridError] = useState<string | null>(null);
+
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (gridInputsEditingRef.current) return;
+
+    const nextCols = String(state.grid.cols);
+    const nextRows = String(state.grid.rows);
+
+    setColsInput(nextCols);
+    setRowsInput(nextRows);
+    setGridError(null);
+  }, [state.grid.cols, state.grid.rows]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   /**
    * Status filter and rename state are UI-only.
@@ -1256,6 +1265,17 @@ export function Toolbar({
                 setColsInput(e.target.value);
                 setGridError(null);
               }}
+              onFocus={() => {
+                gridInputsEditingRef.current = true;
+              }}
+              onBlur={() => {
+                gridInputsEditingRef.current = false;
+
+                const cols = Number(colsInput);
+                if (!Number.isFinite(cols) || colsInput.trim().length === 0) {
+                  setColsInput(String(state.grid.cols));
+                }
+              }}
               inputMode="numeric"
               style={inputStyle}
             />
@@ -1270,6 +1290,17 @@ export function Toolbar({
               onChange={(e) => {
                 setRowsInput(e.target.value);
                 setGridError(null);
+              }}
+              onFocus={() => {
+                gridInputsEditingRef.current = true;
+              }}
+              onBlur={() => {
+                gridInputsEditingRef.current = false;
+
+                const rows = Number(rowsInput);
+                if (!Number.isFinite(rows) || rowsInput.trim().length === 0) {
+                  setRowsInput(String(state.grid.rows));
+                }
               }}
               inputMode="numeric"
               style={inputStyle}
