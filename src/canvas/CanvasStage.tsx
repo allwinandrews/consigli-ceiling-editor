@@ -7,6 +7,7 @@ import type {
   GridCell,
   PlacedComponent,
 } from "../types/editor";
+import { cellKey as toCellKey } from "../types/editor";
 import {
   DEFAULT_CELL_SIZE,
   canvasToWorld,
@@ -16,14 +17,8 @@ import {
 } from "../utils/gridMath";
 
 /**
- * Shared color palette across the UI (Toolbar + Canvas).
- * This keeps type recognition consistent throughout the app.
- *
- * Usage on canvas:
- * - Component outlines/icons
- * - Selection ring
- * - Hover label accent
- * - Invalid cell borders/fills
+ * Centralized color mapping for component types and invalid cells.
+ * Keeping the palette consistent across canvas and toolbar makes the UI easier to scan.
  */
 const TYPE_COLOR: Record<ComponentType | "INVALID_CELL", string> = {
   LIGHT: "#f59e0b", // amber
@@ -33,13 +28,17 @@ const TYPE_COLOR: Record<ComponentType | "INVALID_CELL", string> = {
   INVALID_CELL: "#ef4444", // red
 };
 
+/**
+ * Grid cells are treated as immutable coordinate pairs.
+ * Equality is used for hit testing (hover/select) and occupancy checks.
+ */
 function cellEquals(a: GridCell, b: GridCell) {
   return a.x === b.x && a.y === b.y;
 }
 
 /**
- * Finds the index of the first component occupying a given cell.
- * Returns -1 when the cell is empty.
+ * Returns the index of the first component occupying a given cell.
+ * -1 means the cell is empty.
  */
 function findComponentIndexAtCell(
   components: PlacedComponent[],
@@ -49,13 +48,51 @@ function findComponentIndexAtCell(
 }
 
 /**
- * Draw a simple icon representing a component inside a grid cell.
+ * Default naming prefixes used for newly placed components:
+ * L1, AS1, AR1, SD1, etc.
+ */
+function typePrefix(type: ComponentType) {
+  if (type === "LIGHT") return "L";
+  if (type === "AIR_SUPPLY") return "AS";
+  if (type === "AIR_RETURN") return "AR";
+  return "SD";
+}
+
+/**
+ * Computes the next default name for a newly placed component of the given type.
  *
- * Notes:
- * - Icons are intentionally minimal and readable at multiple zoom levels.
- * - We use zoom-adjusted line widths so strokes look consistent while zooming.
- * - `isGhost` is used during drag to show a semi-transparent preview.
- * - `isSelected` draws a subtle selection ring to match the toolbar selection behavior.
+ * Naming is monotonic per type: it does not renumber existing items.
+ * Example: if L1 is deleted, the next Light becomes L4 rather than reusing L1.
+ * This prevents names from shifting when items are removed.
+ */
+function getNextAutoName(
+  components: PlacedComponent[],
+  type: ComponentType
+): string {
+  const prefix = typePrefix(type);
+  let max = 0;
+
+  for (const c of components) {
+    if (c.type !== type) continue;
+
+    const name = c.autoName;
+    if (!name.startsWith(prefix)) continue;
+
+    const n = Number(name.slice(prefix.length));
+    if (Number.isFinite(n)) max = Math.max(max, n);
+  }
+
+  return `${prefix}${max + 1}`;
+}
+
+/**
+ * Draws a minimal, high-contrast icon centered inside a cell.
+ *
+ * Visual rules:
+ * - White fill + type-colored stroke for strong readability.
+ * - Stroke width is scaled by zoom so icons feel consistent while zooming.
+ * - isGhost is used during drag to render a semi-transparent preview.
+ * - isSelected draws a subtle ring to match the selected state in the UI.
  */
 function drawComponentIcon(args: {
   ctx: CanvasRenderingContext2D;
@@ -83,7 +120,6 @@ function drawComponentIcon(args: {
 
   if (isGhost) ctx.globalAlpha = 0.5;
 
-  // Selection outline (subtle but visible).
   if (isSelected) {
     ctx.save();
     ctx.strokeStyle = stroke;
@@ -98,7 +134,6 @@ function drawComponentIcon(args: {
     ctx.restore();
   }
 
-  // Shape by type.
   if (type === "LIGHT") {
     ctx.beginPath();
     ctx.arc(cx, cy, cellSize * 0.22, 0, Math.PI * 2);
@@ -118,7 +153,6 @@ function drawComponentIcon(args: {
     ctx.fill();
     ctx.stroke();
   } else {
-    // SMOKE_DETECTOR
     ctx.beginPath();
     ctx.arc(cx, cy, cellSize * 0.18, 0, Math.PI * 2);
     ctx.fill();
@@ -128,61 +162,15 @@ function drawComponentIcon(args: {
     ctx.stroke();
   }
 
-  // Always restore alpha to avoid leaking into later drawing.
   ctx.globalAlpha = 1;
 }
 
 /**
- * UI naming prefixes used for auto-generated labels:
- * L1, AS1, AR1, SD1...
- */
-function typePrefix(type: ComponentType) {
-  if (type === "LIGHT") return "L";
-  if (type === "AIR_SUPPLY") return "AS";
-  if (type === "AIR_RETURN") return "AR";
-  return "SD";
-}
-
-/**
- * Builds a stable auto-name map for the current component list.
+ * Renders a floating label above a cell (used on hover).
  *
- * Why this exists:
- * - Components have UUIDs for identity, but humans want short names.
- * - We keep the same approach as the Toolbar: sort by id per type.
- * - Auto names are computed dynamically so they always reflect the current set.
- */
-function buildAutoNameMap(components: PlacedComponent[]) {
-  const byType: Record<ComponentType, string[]> = {
-    LIGHT: [],
-    AIR_SUPPLY: [],
-    AIR_RETURN: [],
-    SMOKE_DETECTOR: [],
-  };
-
-  for (const c of components) byType[c.type].push(c.id);
-
-  for (const t of Object.keys(byType) as ComponentType[]) {
-    byType[t].sort((a, b) => a.localeCompare(b));
-  }
-
-  const map = new Map<string, string>();
-  for (const t of Object.keys(byType) as ComponentType[]) {
-    const prefix = typePrefix(t);
-    const ids = byType[t];
-    for (let i = 0; i < ids.length; i += 1) {
-      map.set(ids[i], `${prefix}${i + 1}`);
-    }
-  }
-
-  return map;
-}
-
-/**
- * Draw a floating label above a cell (used on hover).
- *
- * This helps usability at lower zoom levels:
- * - Users can confirm which component they're pointing at.
- * - We also show "Invalid" when hovering invalid cells.
+ * This improves usability at low zoom:
+ * - Confirms which component is under the cursor (custom label or default name).
+ * - Also communicates invalid areas when hovering invalid cells.
  */
 function drawHoverLabel(args: {
   ctx: CanvasRenderingContext2D;
@@ -197,7 +185,6 @@ function drawHoverLabel(args: {
   const x = cell.x * cellSize + cellSize / 2;
   const y = cell.y * cellSize - cellSize * 0.1;
 
-  // Zoom-aware font size (kept within a readable range).
   const fontSize = Math.max(10, Math.min(14, 12 / zoom));
   ctx.font = `900 ${fontSize}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
   ctx.textAlign = "center";
@@ -212,12 +199,10 @@ function drawHoverLabel(args: {
   const rx = x - w / 2;
   const ry = y - h;
 
-  // Label background.
   ctx.fillStyle = "rgba(17,24,39,0.92)";
   ctx.strokeStyle = "rgba(255,255,255,0.12)";
   ctx.lineWidth = 1 / zoom;
 
-  // Rounded rect.
   ctx.beginPath();
   const r = 8 / zoom;
   ctx.moveTo(rx + r, ry);
@@ -233,7 +218,6 @@ function drawHoverLabel(args: {
   ctx.fill();
   ctx.stroke();
 
-  // Accent underline (matches component type color).
   if (accentColor) {
     ctx.save();
     ctx.strokeStyle = accentColor;
@@ -249,15 +233,14 @@ function drawHoverLabel(args: {
     ctx.restore();
   }
 
-  // Text.
   ctx.fillStyle = "#ffffff";
   ctx.fillText(text, x, y - padY);
 }
 
-function cellKey(cell: GridCell) {
-  return `${cell.x},${cell.y}`;
-}
-
+/**
+ * Parses a persisted cell key in "x,y" form.
+ * Returns null for corrupted data.
+ */
 function parseKey(key: string): GridCell | null {
   const [xs, ys] = key.split(",");
   const x = Number(xs);
@@ -267,10 +250,8 @@ function parseKey(key: string): GridCell | null {
 }
 
 /**
- * The invalid selection lives inside EditorState as an "escape hatch"
- * (because invalid-cells are a Set and not part of the PlacedComponent array).
- * We guard reads because `placeMode/selectedInvalidCellKey` were added later
- * and may not exist in older persisted states.
+ * Selected invalid-cell key is stored as an extra field on state to avoid widening types.
+ * Reads are defensive to stay compatible with older persisted states.
  */
 function getSelectedInvalidKeyFromState(state: unknown): string | null {
   if (!state || typeof state !== "object") return null;
@@ -281,20 +262,6 @@ function getSelectedInvalidKeyFromState(state: unknown): string | null {
   return typeof v === "string" ? v : null;
 }
 
-/**
- * CanvasStage
- *
- * The main interactive canvas:
- * - Renders a grid representing the room ceiling
- * - Renders placed components + invalid cells
- * - Handles pointer interactions (pan, select/drag, place, erase)
- * - Handles wheel zoom around pointer position
- *
- * Performance approach:
- * - Uses refs for `state` and `camera` to avoid re-binding event handlers on every render.
- * - Drawing is imperative: `draw()` paints based on the latest refs.
- * - A lightweight `redrawTick` triggers redraws when relevant state changes.
- */
 export function CanvasStage() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -306,19 +273,22 @@ export function CanvasStage() {
     setViewportSize,
     toggleInvalidCell,
     setInvalidCells,
-    setState, // stores selectedInvalidCellKey + other extended state
+    setState,
   } = useEditorState();
 
-  // "Mirror" refs that event handlers can safely read without stale closures.
+  /**
+   * Pointer and wheel handlers are registered once, so they read from refs
+   * to always use the latest camera/state without re-binding listeners.
+   */
   const cameraRef = useRef<Camera>(state.camera);
   const stateRef = useRef(state);
 
   /**
-   * Hover state is managed outside React state to avoid re-rendering on every pointer move.
-   * We only trigger a draw when hover target changes.
+   * Hover state is stored outside React state to avoid re-rendering on every mouse move.
+   * The canvas is redrawn only when a meaningful hover target changes.
    */
   const hoverRef = useRef<{
-    isOverSelectable: boolean; // component OR invalid cell
+    isOverSelectable: boolean;
     hoveredComponentId: string | null;
     hoveredCell: GridCell | null;
     hoveredInvalidKey: string | null;
@@ -329,35 +299,49 @@ export function CanvasStage() {
     hoveredInvalidKey: null,
   });
 
-  // PAN tool drag state.
+  /**
+   * Panning uses pointer capture so drag continues smoothly even if the pointer
+   * leaves the canvas bounds.
+   */
   const isPanningRef = useRef(false);
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
 
-  // Dragging a component (SELECT tool).
+  /**
+   * Drag state for component moves (SELECT tool).
+   * While dragging, we draw a ghost preview and validate the drop target.
+   */
   const dragRef = useRef<{
     componentId: string;
     hoverCell: GridCell;
     pointerId: number;
   } | null>(null);
 
-  // Dragging an invalid cell (SELECT tool).
+  /**
+   * Drag state for moving invalid cells (SELECT tool).
+   * This supports repositioning a single invalid cell via drag-and-drop.
+   */
   const invalidDragRef = useRef<{
-    fromKey: string; // original "x,y"
+    fromKey: string;
     hoverCell: GridCell;
     pointerId: number;
   } | null>(null);
 
-  // draw() is assigned once and called from multiple effects/handlers.
+  /**
+   * Draw function is stored in a ref so we can call it from event listeners
+   * and from effects without re-registering handlers.
+   */
   const drawRef = useRef<(() => void) | null>(null);
 
-  // Resize/viewport tracking (throttled through RAF).
+  /**
+   * Viewport size updates are throttled through requestAnimationFrame to avoid
+   * spamming state updates during resize.
+   */
   const lastViewportRef = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
   const rafViewportRef = useRef<number | null>(null);
 
   /**
-   * Redraw trigger:
-   * We intentionally track only the fields that affect the canvas rendering.
-   * If a state update changes something unrelated, it shouldn't force a repaint.
+   * Produces a compact signature of values that should trigger a redraw.
+   * This keeps redraw logic explicit and avoids missing visual updates.
    */
   const redrawTick = useMemo(
     () =>
@@ -377,7 +361,6 @@ export function CanvasStage() {
 
   const clampZoom = (z: number) => Math.min(4, Math.max(0.2, z));
 
-  // Keep refs updated for event handlers.
   useEffect(() => {
     cameraRef.current = state.camera;
   }, [state.camera]);
@@ -387,8 +370,8 @@ export function CanvasStage() {
   }, [state]);
 
   /**
-   * When the tool changes, cancel any active interaction state.
-   * This prevents "stuck dragging" or panning when switching tools mid-action.
+   * Tool changes should cancel any in-progress pointer interactions to avoid
+   * leaking pointer-capture state across modes.
    */
   useEffect(() => {
     isPanningRef.current = false;
@@ -397,12 +380,6 @@ export function CanvasStage() {
     invalidDragRef.current = null;
   }, [state.tool]);
 
-  /**
-   * Main canvas setup:
-   * - ResizeObserver: keeps canvas pixel size in sync with CSS size
-   * - Pointer events: all primary interactions
-   * - Wheel: zoom around mouse pointer
-   */
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -420,11 +397,8 @@ export function CanvasStage() {
     };
 
     /**
-     * Resize canvas internal resolution to match the element size.
-     * Then redraw.
-     *
-     * Note: We batch viewport state updates via RAF to avoid spamming state
-     * during continuous resize.
+     * The canvas backing buffer is aligned to the element size.
+     * This keeps drawing crisp and ensures coordinate math matches pixels.
      */
     const resizeCanvasToClient = () => {
       const w = canvas.clientWidth;
@@ -443,16 +417,14 @@ export function CanvasStage() {
       });
     };
 
-    /**
-     * Convert a pointer/wheel event into coordinates relative to the canvas.
-     */
     const getCanvasPoint = (e: PointerEvent | WheelEvent) => {
       const rect = canvas.getBoundingClientRect();
       return { x: e.clientX - rect.left, y: e.clientY - rect.top };
     };
 
     /**
-     * Convert a pointer/wheel event into a grid cell (world space -> cell space).
+     * Pointer events are received in screen coordinates; convert to:
+     * canvas -> world -> cell coordinates using the current camera.
      */
     const getCellFromPointer = (e: PointerEvent | WheelEvent) => {
       const pt = getCanvasPoint(e);
@@ -461,17 +433,16 @@ export function CanvasStage() {
     };
 
     /**
-     * Persist the camera ref into state.
-     * We store camera in state so other UI (ZoomControl) stays in sync.
+     * Camera is updated continuously during pan/zoom and persisted to state
+     * when an interaction completes.
      */
     const commitCameraToState = () => {
       const next = cameraRef.current;
       setCamera(() => next);
     };
 
-    // Cell utility checks based on latest state ref.
     const isCellInvalid = (cell: GridCell) =>
-      stateRef.current.invalidCells.has(cellKey(cell));
+      stateRef.current.invalidCells.has(toCellKey(cell));
 
     const isCellOccupiedByOther = (cell: GridCell, movingId: string) =>
       stateRef.current.components.some(
@@ -482,10 +453,10 @@ export function CanvasStage() {
       stateRef.current.components.some((c) => cellEquals(c.cell, cell));
 
     /**
-     * Drop validation for components:
-     * - must be within grid
-     * - cannot drop on invalid cell
-     * - cannot collide with a different component
+     * A component can be dropped only if:
+     * - the cell is within bounds
+     * - the cell is not marked invalid
+     * - the cell is not occupied by another component
      */
     const canDropOnCell = (cell: GridCell, movingId: string) => {
       if (!isWithinGrid(cell, stateRef.current.grid)) return false;
@@ -495,28 +466,26 @@ export function CanvasStage() {
     };
 
     /**
-     * Drop validation for invalid cells (when dragging them in SELECT):
-     * - must be within grid
-     * - cannot land on another invalid cell (unless it's the original key)
-     * - CAN land on a component (we remove the component on drop)
+     * Invalid cells can be moved only within the grid.
+     * Moving onto an existing invalid cell is blocked (unless it's the same cell).
      */
     const canDropInvalidOnCell = (toCell: GridCell, fromKey: string) => {
       if (!isWithinGrid(toCell, stateRef.current.grid)) return false;
 
-      const toKey = cellKey(toCell);
+      const toKey = toCellKey(toCell);
 
-      // Allow dropping back on itself.
       if (toKey !== fromKey && stateRef.current.invalidCells.has(toKey)) {
         return false;
       }
 
-      // Allow landing on a component (replacement behavior).
       return true;
     };
 
     /**
-     * Cursor feedback is a big part of editor UX.
-     * We compute it imperatively (based on refs) so it updates instantly.
+     * Cursor styles communicate the active tool and whether an action is possible:
+     * - grab/grabbing while panning
+     * - pointer when hovering a selectable target in SELECT
+     * - not-allowed when placement is invalid
      */
     const updateCursor = () => {
       const s = stateRef.current;
@@ -559,13 +528,13 @@ export function CanvasStage() {
         return;
       }
 
-      // ERASE and any fallback modes.
       canvas.style.cursor = "crosshair";
     };
 
     /**
-     * Draw a ghosted invalid cell while dragging it.
-     * We add a green/red outline to indicate whether dropping is allowed.
+     * Visual preview for dragging an invalid cell:
+     * - Semi-transparent fill
+     * - Green border for valid drop, red border for invalid drop
      */
     const drawInvalidGhost = (cell: GridCell, ok: boolean) => {
       ctx.save();
@@ -580,36 +549,63 @@ export function CanvasStage() {
     };
 
     /**
-     * draw()
-     * The single rendering function that paints the entire scene from scratch.
+     * Computes hover targets for the given cell:
+     * - component id if a component occupies the cell
+     * - invalid key if the cell is invalid (and not covered by a component)
      *
-     * Structure:
-     * 1) Clear background
-     * 2) Apply camera transform
-     * 3) Draw visible grid + outline
-     * 4) Draw invalid cells (with selection)
-     * 5) Draw components (excluding the one being dragged)
-     * 6) Draw drag ghosts + drop outlines
-     * 7) Draw hover label
+     * This supports consistent hover labeling across tools and ensures SELECT
+     * can switch between pointer/default cursor appropriately.
+     */
+    const updateHoverTargets = (cell: GridCell) => {
+      const s = stateRef.current;
+
+      const idx = findComponentIndexAtCell(s.components, cell);
+      const overComponent = idx !== -1;
+
+      const overInvalid =
+        !overComponent && isWithinGrid(cell, s.grid) && isCellInvalid(cell);
+
+      const nextHoveredId = overComponent ? s.components[idx].id : null;
+      const nextHoveredInvalidKey = overInvalid ? toCellKey(cell) : null;
+      const nextOverSelectable = overComponent || overInvalid;
+
+      const changed =
+        hoverRef.current.hoveredComponentId !== nextHoveredId ||
+        hoverRef.current.hoveredInvalidKey !== nextHoveredInvalidKey;
+
+      if (hoverRef.current.isOverSelectable !== nextOverSelectable) {
+        hoverRef.current.isOverSelectable = nextOverSelectable;
+        updateCursor();
+      }
+
+      if (!changed) return false;
+
+      hoverRef.current.hoveredComponentId = nextHoveredId;
+      hoverRef.current.hoveredInvalidKey = nextHoveredInvalidKey;
+      return true;
+    };
+
+    /**
+     * Single-frame render:
+     * - Clears background
+     * - Applies camera transform (pan + zoom)
+     * - Draws visible grid lines only (performance on large grids)
+     * - Draws invalid cells + selection rings
+     * - Draws components, drag previews, and hover labels
      */
     const draw = () => {
       const s = stateRef.current;
       const { panX, panY, zoom } = cameraRef.current;
-
-      const autoNameById = buildAutoNameMap(s.components);
       const selectedInvalidKey = getSelectedInvalidKeyFromState(s);
 
-      // Clear + background.
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = "#f5f5f5";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // Apply camera transform.
       ctx.save();
       ctx.translate(panX, panY);
       ctx.scale(zoom, zoom);
 
-      // Only draw visible region for performance on huge grids.
       const { minX, minY, maxX, maxY } = getVisibleCellBounds({
         canvasWidth: canvas.width,
         canvasHeight: canvas.height,
@@ -618,7 +614,6 @@ export function CanvasStage() {
         cellSize,
       });
 
-      // Grid lines.
       ctx.strokeStyle = "#d0d0d0";
       ctx.lineWidth = 1 / zoom;
 
@@ -638,19 +633,16 @@ export function CanvasStage() {
         ctx.stroke();
       }
 
-      // Outer grid outline (helps users understand bounds).
       ctx.strokeStyle = "#999";
       ctx.lineWidth = 2 / zoom;
       ctx.strokeRect(0, 0, s.grid.cols * cellSize, s.grid.rows * cellSize);
 
-      // Invalid cells (rendered as translucent red blocks).
       if (s.invalidCells.size > 0) {
         ctx.fillStyle = "rgba(239, 68, 68, 0.12)";
 
         const invalidDragging = invalidDragRef.current;
 
         for (const key of s.invalidCells) {
-          // While dragging an invalid cell, hide its original position.
           if (invalidDragging && key === invalidDragging.fromKey) continue;
 
           const parsed = parseKey(key);
@@ -662,7 +654,6 @@ export function CanvasStage() {
           }
         }
 
-        // Selected invalid cell gets a thicker border.
         if (selectedInvalidKey && s.invalidCells.has(selectedInvalidKey)) {
           const parsed = parseKey(selectedInvalidKey);
           if (parsed) {
@@ -676,7 +667,6 @@ export function CanvasStage() {
         }
       }
 
-      // Components (skip the one being dragged).
       const dragging = dragRef.current;
       for (const comp of s.components) {
         if (
@@ -699,7 +689,6 @@ export function CanvasStage() {
         });
       }
 
-      // Component drag ghost + drop feedback.
       if (dragging) {
         const comp = s.components.find((c) => c.id === dragging.componentId);
         if (comp) {
@@ -725,7 +714,6 @@ export function CanvasStage() {
         }
       }
 
-      // Invalid cell drag ghost + drop feedback.
       const invalidDragging = invalidDragRef.current;
       if (invalidDragging) {
         const ok = canDropInvalidOnCell(
@@ -735,17 +723,13 @@ export function CanvasStage() {
         drawInvalidGhost(invalidDragging.hoverCell, ok);
       }
 
-      // Hover labels (component label or "Invalid").
       const hoveredId = hoverRef.current.hoveredComponentId;
       const hoveredCell = hoverRef.current.hoveredCell;
 
       if (hoveredId) {
         const comp = s.components.find((c) => c.id === hoveredId);
         if (comp) {
-          const label =
-            (comp as { label?: string }).label?.trim() ||
-            autoNameById.get(comp.id) ||
-            "Item";
+          const label = comp.label?.trim() || comp.autoName;
 
           drawHoverLabel({
             ctx,
@@ -776,8 +760,7 @@ export function CanvasStage() {
     drawRef.current = draw;
 
     /**
-     * If an invalid cell is selected but later removed, clear the selection.
-     * This prevents UI referencing stale invalid keys.
+     * If the selected invalid cell is removed (erase/move), clear the selection.
      */
     const clearInvalidSelectionIfMissing = (key: string) => {
       const s = stateRef.current;
@@ -789,6 +772,10 @@ export function CanvasStage() {
       }
     };
 
+    /**
+     * Begins a component drag operation using pointer capture so the drag remains active
+     * even if the pointer leaves the canvas.
+     */
     const beginComponentDrag = (
       pointerId: number,
       componentId: string,
@@ -799,6 +786,10 @@ export function CanvasStage() {
       canvas.setPointerCapture(pointerId);
     };
 
+    /**
+     * Begins an invalid-cell drag operation.
+     * The source key is tracked so we can move the invalid marker as a single item.
+     */
     const beginInvalidDrag = (
       pointerId: number,
       fromKey: string,
@@ -809,13 +800,6 @@ export function CanvasStage() {
       canvas.setPointerCapture(pointerId);
     };
 
-    /**
-     * Pointer down:
-     * - PAN: start panning
-     * - SELECT: select + begin dragging components/invalid cells
-     * - PLACE: place components OR toggle invalid cells
-     * - ERASE: delete components or invalid cells
-     */
     const onPointerDown = (e: PointerEvent) => {
       if (e.button !== 0) return;
 
@@ -832,7 +816,6 @@ export function CanvasStage() {
       const cell = getCellFromPointer(e);
 
       if (s.tool === "SELECT") {
-        // Select + drag a component if present.
         const idx = findComponentIndexAtCell(s.components, cell);
         if (idx !== -1) {
           const comp = s.components[idx];
@@ -845,9 +828,8 @@ export function CanvasStage() {
           return;
         }
 
-        // Select + drag invalid cell if present.
         if (isWithinGrid(cell, s.grid) && isCellInvalid(cell)) {
-          const k = cellKey(cell);
+          const k = toCellKey(cell);
 
           setSelectedComponentId(null);
           setState((prev) => ({ ...prev, selectedInvalidCellKey: k }));
@@ -857,25 +839,21 @@ export function CanvasStage() {
           return;
         }
 
-        // Clicked empty space => clear selection.
         setSelectedComponentId(null);
         setState((prev) => ({ ...prev, selectedInvalidCellKey: null }));
         draw();
         return;
       }
 
-      // From here on, PLACE / ERASE only act within the grid.
       if (!isWithinGrid(cell, s.grid)) return;
 
       if (s.tool === "PLACE") {
-        // Place invalid cells (toggle).
         if (s.placeMode === "INVALID_CELL") {
-          const k = cellKey(cell);
+          const k = toCellKey(cell);
           const willBeInvalid = !s.invalidCells.has(k);
 
           toggleInvalidCell(cell);
 
-          // Selecting the toggled invalid cell makes it easy to rename/delete via toolbar list.
           setSelectedComponentId(null);
           setState((prev) => ({
             ...prev,
@@ -885,23 +863,22 @@ export function CanvasStage() {
           return;
         }
 
-        // Place a component.
         if (isCellInvalid(cell)) return;
 
         setState((prev) => ({ ...prev, selectedInvalidCellKey: null }));
 
         setComponents((prev) => {
-          // Prevent duplicate placement in the same cell.
           if (findComponentIndexAtCell(prev, cell) !== -1) return prev;
 
           const id = crypto.randomUUID();
-          return [...prev, { id, type: s.activeComponentType, cell }];
+          const autoName = getNextAutoName(prev, s.activeComponentType);
+
+          return [...prev, { id, type: s.activeComponentType, cell, autoName }];
         });
         return;
       }
 
       if (s.tool === "ERASE") {
-        // Erase a component first (if present).
         const idx2 = findComponentIndexAtCell(s.components, cell);
         if (idx2 !== -1) {
           setComponents((prev) =>
@@ -911,8 +888,7 @@ export function CanvasStage() {
           return;
         }
 
-        // Otherwise erase invalid cell if present.
-        const k = cellKey(cell);
+        const k = toCellKey(cell);
         setInvalidCells((prev) => {
           if (!prev.has(k)) return prev;
           const next = new Set(prev);
@@ -930,26 +906,17 @@ export function CanvasStage() {
       }
     };
 
-    /**
-     * Pointer move:
-     * - Update hover cell
-     * - If dragging, update ghost position and redraw
-     * - If panning, update camera ref and redraw
-     * - If selecting, compute hover target and redraw when it changes
-     */
     const onPointerMove = (e: PointerEvent) => {
       const s = stateRef.current;
 
       hoverRef.current.hoveredCell = getCellFromPointer(e);
 
-      // Dragging component.
       if (dragRef.current && dragRef.current.pointerId === e.pointerId) {
         dragRef.current.hoverCell = hoverRef.current.hoveredCell;
         draw();
         return;
       }
 
-      // Dragging invalid cell.
       if (
         invalidDragRef.current &&
         invalidDragRef.current.pointerId === e.pointerId
@@ -959,7 +926,6 @@ export function CanvasStage() {
         return;
       }
 
-      // Panning.
       if (isPanningRef.current) {
         const last = lastPointerRef.current;
         if (!last) return;
@@ -978,60 +944,25 @@ export function CanvasStage() {
         return;
       }
 
-      // Hover logic for SELECT tool (shows pointer cursor + hover label).
-      if (s.tool === "SELECT") {
-        const cell = hoverRef.current.hoveredCell;
+      /**
+       * Hover feedback is useful in every tool, but we skip hover recalculation
+       * during captured pointer interactions handled above.
+       */
+      const cell = hoverRef.current.hoveredCell;
+      const changed = updateHoverTargets(cell);
 
-        const idx = findComponentIndexAtCell(s.components, cell);
-        const overComponent = idx !== -1;
-        const overInvalid =
-          !overComponent && isWithinGrid(cell, s.grid) && isCellInvalid(cell);
+      if (s.tool === "PLACE" || s.tool === "ERASE") updateCursor();
 
-        const nextHoveredId = overComponent ? s.components[idx].id : null;
-        const nextHoveredInvalidKey = overInvalid ? cellKey(cell) : null;
-
-        const nextOverSelectable = overComponent || overInvalid;
-
-        if (hoverRef.current.isOverSelectable !== nextOverSelectable) {
-          hoverRef.current.isOverSelectable = nextOverSelectable;
-          updateCursor();
-        }
-
-        const changed =
-          hoverRef.current.hoveredComponentId !== nextHoveredId ||
-          hoverRef.current.hoveredInvalidKey !== nextHoveredInvalidKey;
-
-        if (changed) {
-          hoverRef.current.hoveredComponentId = nextHoveredId;
-          hoverRef.current.hoveredInvalidKey = nextHoveredInvalidKey;
-          draw();
-        }
-
-        return;
-      }
-
-      // PLACE/ERASE cursor updates are simple and don't require full redraw.
-      if (s.tool === "PLACE") updateCursor();
-
-      // If we had hover state from SELECT and tool changed, clear it.
-      if (
-        hoverRef.current.hoveredComponentId ||
-        hoverRef.current.hoveredInvalidKey
-      ) {
-        hoverRef.current.hoveredComponentId = null;
-        hoverRef.current.hoveredInvalidKey = null;
+      if (changed) {
         draw();
       }
     };
 
     /**
-     * Component drag drop:
-     * - If valid, update component cell
-     * - Clear drag state and redraw
-     *
-     * Note:
-     * We also register window-level pointerup handlers (below) so the drop
-     * is committed even if the pointer is released outside the canvas.
+     * Finalizes a component drag:
+     * - Validates the drop cell
+     * - Commits the position to state
+     * - Releases pointer capture
      */
     const finalizeComponentDrag = (e: PointerEvent) => {
       const drag = dragRef.current;
@@ -1048,8 +979,6 @@ export function CanvasStage() {
         );
 
         setComponents(() => nextComponents);
-
-        // Keep the local mirror ref in sync to avoid one-frame inconsistencies.
         stateRef.current = { ...s, components: nextComponents };
       }
 
@@ -1065,10 +994,10 @@ export function CanvasStage() {
     };
 
     /**
-     * Invalid cell drag drop:
-     * - Moves invalid cell from fromKey -> toKey
-     * - If dropped onto a component cell, removes that component (replacement behavior)
-     * - Keeps invalid selection focused on new position
+     * Finalizes an invalid-cell drag:
+     * - Moves the invalid marker to the new cell (if valid)
+     * - Removes any component that would overlap the invalid cell after the move
+     * - Updates invalid selection to follow the moved cell
      */
     const finalizeInvalidDrag = (e: PointerEvent) => {
       const drag = invalidDragRef.current;
@@ -1080,14 +1009,13 @@ export function CanvasStage() {
       const s = stateRef.current;
 
       const fromKey = drag.fromKey;
-      const toKey = cellKey(dropCell);
+      const toKey = toCellKey(dropCell);
 
       if (canDropInvalidOnCell(dropCell, fromKey)) {
         const nextInvalid = new Set(s.invalidCells);
         nextInvalid.delete(fromKey);
         nextInvalid.add(toKey);
 
-        // Replacement behavior: invalid cell can land on components (component removed).
         const nextComponents = s.components.filter(
           (c) => !cellEquals(c.cell, dropCell)
         );
@@ -1098,7 +1026,6 @@ export function CanvasStage() {
         setSelectedComponentId(null);
         setState((prev) => ({ ...prev, selectedInvalidCellKey: toKey }));
 
-        // Mirror ref update so subsequent handlers read the updated sets immediately.
         stateRef.current = {
           ...s,
           invalidCells: nextInvalid,
@@ -1106,7 +1033,6 @@ export function CanvasStage() {
           selectedComponentId: null,
         };
       } else {
-        // Invalid drop => keep selection on original cell.
         setState((prev) => ({ ...prev, selectedInvalidCellKey: fromKey }));
       }
 
@@ -1121,11 +1047,6 @@ export function CanvasStage() {
       draw();
     };
 
-    /**
-     * Pointer up:
-     * - If dragging, finalize drop
-     * - If panning, commit camera to state
-     */
     const onPointerUp = (e: PointerEvent) => {
       if (dragRef.current && dragRef.current.pointerId === e.pointerId) {
         finalizeComponentDrag(e);
@@ -1155,9 +1076,8 @@ export function CanvasStage() {
     };
 
     /**
-     * Wheel zoom:
-     * - Zooms in/out around the mouse pointer (not center)
-     * - Commits camera immediately so other UI stays synced
+     * Wheel zoom is centered on the pointer position so users can zoom into a detail
+     * without losing context.
      */
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
@@ -1168,11 +1088,9 @@ export function CanvasStage() {
       const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
       const nextZoom = clampZoom(camera.zoom * zoomFactor);
 
-      // World point under cursor BEFORE zoom.
       const worldX = (cx - camera.panX) / camera.zoom;
       const worldY = (cy - camera.panY) / camera.zoom;
 
-      // Adjust pan so cursor stays anchored to the same world point AFTER zoom.
       const updatedPanX = cx - worldX * nextZoom;
       const updatedPanY = cy - worldY * nextZoom;
 
@@ -1186,25 +1104,21 @@ export function CanvasStage() {
       draw();
     };
 
-    // Watch for layout size changes.
     const ro = new ResizeObserver(() => {
       resizeCanvasToClient();
     });
     ro.observe(canvas);
 
-    // Initial sizing + draw.
     resizeCanvasToClient();
 
-    // Canvas event listeners.
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointercancel", onPointerUp);
 
     /**
-     * Window-level finalize handlers:
-     * These ensure drop commits even if pointerup happens outside the canvas.
-     * This also fixes common "drop doesn't happen until I move the cursor" issues.
+     * Global listeners ensure drag finalization even if the pointer-up happens
+     * outside the canvas while captured.
      */
     window.addEventListener("pointerup", finalizeComponentDrag);
     window.addEventListener("pointercancel", finalizeComponentDrag);
@@ -1249,7 +1163,10 @@ export function CanvasStage() {
     setState,
   ]);
 
-  // Redraw whenever relevant editor state changes.
+  /**
+   * Redraw on meaningful state changes (tooling, camera, components, invalid cells).
+   * Rendering stays imperative for performance on large grids.
+   */
   useEffect(() => {
     drawRef.current?.();
   }, [redrawTick]);
@@ -1261,7 +1178,6 @@ export function CanvasStage() {
         width: "100%",
         height: "100%",
         display: "block",
-        // Disable browser gestures (panning/zooming) so pointer events behave predictably.
         touchAction: "none",
       }}
     />

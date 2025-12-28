@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { EditorState, GridCell } from "../types/editor";
+import type { EditorState, PlacedComponent, cellKey } from "../types/editor";
 import { initialEditorState } from "./initialState";
 import {
   EditorStateContext,
@@ -18,21 +18,24 @@ import {
 
 const HISTORY_LIMIT = 50;
 
-// localStorage keys used by the “Saved Layouts” feature.
+/**
+ * localStorage keys used by the "Saved Layouts" workflow.
+ * - layouts: stores an array of saved layout entries (metadata + editor snapshot)
+ * - selected id: stores which layout should be auto-opened on refresh
+ */
 const STORAGE_KEY_SAVED_LAYOUTS = "consigli_saved_layouts_v1";
 const STORAGE_KEY_SELECTED_LAYOUT_ID = "consigli_selected_layout_id_v1";
 
-// --------------------------------------
-// Persistence schema (versioned) — v1
-// --------------------------------------
-
 /**
- * A JSON-serializable snapshot of the editor state.
+ * Versioned persistence wrapper for the editor snapshot.
+ *
+ * Why version:
+ * - The in-memory EditorState can evolve over time.
+ * - A version field makes migrations possible without breaking existing users.
  *
  * Notes:
- * - We store a version number so we can migrate later if the state shape changes.
- * - Sets cannot be JSON-serialized directly, so we store invalidCells as an array.
- * - viewport is intentionally excluded: it is runtime-only and comes from CanvasStage.
+ * - Set cannot be JSON-serialized, so invalidCells is stored as an array.
+ * - viewport is excluded because it is runtime-only (measured by CanvasStage).
  */
 type PersistedEditorStateV1 = {
   v: 1;
@@ -43,33 +46,28 @@ type PersistedEditorStateV1 = {
   activeComponentType: EditorState["activeComponentType"];
   selectedComponentId: EditorState["selectedComponentId"];
   placeMode: EditorState["placeMode"];
-
-  // Set can't be JSON, so we persist as an array of "x,y" strings.
   invalidCells: string[];
 
-  // Optional fields for backward compatibility with older stored states.
+  /**
+   * Optional fields allow older persisted states to load safely.
+   * These may not exist in early app versions or partial migrations.
+   */
   selectedInvalidCellKey?: string | null;
   invalidCellLabels?: Record<string, string>;
 };
 
 /**
- * Each saved layout entry stores:
- * - user-facing metadata (name, timestamps)
- * - schemaVersion for the wrapper entry
- * - persisted editor data (versioned independently)
+ * Stored layout entry combines user-facing metadata and the persisted editor snapshot.
+ * The entry has its own schemaVersion, independent from the editor snapshot version.
  */
 type SavedLayoutEntryV1 = SavedLayoutMeta & {
   schemaVersion: 1;
   data: PersistedEditorStateV1;
 };
 
-// -----------------------
-// Utilities / helpers
-// -----------------------
-
 /**
- * Parse JSON safely without throwing.
- * Returns `null` if the input is invalid JSON.
+ * Parse JSON safely without throwing, returning null on invalid input.
+ * localStorage can be corrupted or edited manually, so parsing must be defensive.
  */
 function safeParseJson(txt: string): unknown {
   try {
@@ -80,8 +78,8 @@ function safeParseJson(txt: string): unknown {
 }
 
 /**
- * Generate a local id for saved layouts.
- * We prefer crypto.randomUUID (best uniqueness), but provide a fallback for older browsers.
+ * Generates a unique id for a saved layout.
+ * Uses crypto.randomUUID when available; falls back to a timestamp-based id.
  */
 function generateId(): string {
   const c = globalThis.crypto as unknown as
@@ -90,21 +88,12 @@ function generateId(): string {
 
   if (c?.randomUUID) return c.randomUUID();
 
-  // Fallback: good enough for client-only local storage usage.
   return `layout_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
 /**
- * Convert a cell into its stable "x,y" key form.
- * This format is used across the app for invalid cell sets and label dictionaries.
- */
-function cellKey(cell: GridCell): string {
-  return `${cell.x},${cell.y}`;
-}
-
-/**
- * Parse a "x,y" string back into numbers.
- * We sanitize by flooring to integers since grid coordinates must be integers.
+ * Parses a "x,y" cell key string into integer coordinates.
+ * Returns null if the input is not in a usable form.
  */
 function parseCellKey(key: string): { x: number; y: number } | null {
   const [xs, ys] = key.split(",");
@@ -115,12 +104,16 @@ function parseCellKey(key: string): { x: number; y: number } | null {
 }
 
 /**
- * Validate and normalize invalid cell keys loaded from storage.
+ * Normalizes invalid cell keys loaded from persistence.
  *
- * Why this exists:
- * - localStorage can be edited manually or become corrupted
- * - grid size might change between saves
- * - we only keep keys that are valid "x,y" and within bounds
+ * Guarantees:
+ * - Only "x,y" strings that parse to integers are kept.
+ * - Keys must be within the current grid bounds.
+ *
+ * This protects the editor from:
+ * - corrupted storage
+ * - manual edits
+ * - grid size changes across saves
  */
 function sanitizeInvalidCells(
   keys: unknown,
@@ -145,13 +138,12 @@ function sanitizeInvalidCells(
 }
 
 /**
- * Validate and normalize invalid-cell labels loaded from storage.
+ * Normalizes invalid-cell labels loaded from persistence.
  *
  * Rules:
- * 1) key must be valid "x,y"
- * 2) key must be in bounds
- * 3) key must exist inside invalidCells
- * 4) label must be a non-empty trimmed string
+ * - key must be a valid in-bounds "x,y"
+ * - key must exist in invalidCells (labels only apply to invalid cells)
+ * - value must be a non-empty trimmed string
  */
 function sanitizeInvalidCellLabels(args: {
   labels: unknown;
@@ -186,11 +178,71 @@ function sanitizeInvalidCellLabels(args: {
 }
 
 /**
- * Convert the in-memory EditorState into a storage-friendly snapshot.
+ * Reads existing autoNames and returns a map of { prefix -> maxIndex }.
+ * This is used to continue numbering without reusing names.
+ */
+function seedAutoNameCounters(
+  components: PlacedComponent[]
+): Record<string, number> {
+  const counters: Record<string, number> = {};
+
+  for (const c of components) {
+    const raw = (c as unknown as { autoName?: unknown }).autoName;
+    if (typeof raw !== "string") continue;
+
+    const name = raw.trim();
+    if (name.length === 0) continue;
+
+    const match = /^([A-Z]+)(\d+)$/.exec(name);
+    if (!match) continue;
+
+    const prefix = match[1];
+    const num = Number(match[2]);
+    if (!Number.isFinite(num)) continue;
+
+    counters[prefix] = Math.max(counters[prefix] ?? 0, num);
+  }
+
+  return counters;
+}
+
+/**
+ * Ensures every component in the list has an autoName.
  *
- * Important:
- * - We read optional fields defensively because not every state instance
- *   is guaranteed to include them (older versions, partial migrations, etc.).
+ * When used:
+ * - loading older snapshots (autoName may be missing)
+ * - callers creating components without autoName
+ *
+ * Naming is stable:
+ * - existing autoNames are kept as-is
+ * - new names continue from the highest number per prefix
+ */
+function ensureAutoNames(components: PlacedComponent[]): PlacedComponent[] {
+  const prefix: Record<PlacedComponent["type"], string> = {
+    LIGHT: "L",
+    AIR_SUPPLY: "AS",
+    AIR_RETURN: "AR",
+    SMOKE_DETECTOR: "SD",
+  };
+
+  const counters = seedAutoNameCounters(components);
+
+  return components.map((c) => {
+    const raw = (c as unknown as { autoName?: unknown }).autoName;
+    const hasAutoName = typeof raw === "string" && raw.trim().length > 0;
+    if (hasAutoName) return c;
+
+    const p = prefix[c.type] ?? "C";
+    const next = (counters[p] ?? 0) + 1;
+    counters[p] = next;
+
+    return { ...c, autoName: `${p}${next}` };
+  });
+}
+
+/**
+ * Converts the in-memory EditorState into a JSON-serializable snapshot.
+ * Optional fields are read defensively because older states may not contain them.
  */
 function toPersistedEditorState(state: EditorState): PersistedEditorStateV1 {
   const selectedInvalidCellKey =
@@ -225,12 +277,13 @@ function toPersistedEditorState(state: EditorState): PersistedEditorStateV1 {
 }
 
 /**
- * Convert a persisted snapshot back into a valid EditorState.
+ * Converts a persisted snapshot into a safe, usable EditorState.
  *
  * Goals:
- * - Be tolerant of missing optional fields
- * - Sanitize invalid cell sets and labels
- * - Avoid persisting runtime-only viewport values
+ * - validate minimum required data
+ * - sanitize invalid cells and their labels
+ * - restore missing optional fields safely
+ * - keep runtime-only viewport excluded (CanvasStage will populate it)
  */
 function fromPersistedEditorState(raw: unknown): EditorState | null {
   if (!raw || typeof raw !== "object") return null;
@@ -238,7 +291,6 @@ function fromPersistedEditorState(raw: unknown): EditorState | null {
   const data = raw as Partial<PersistedEditorStateV1>;
   if (data.v !== 1) return null;
 
-  // Validate minimum required structure.
   if (
     !data.grid ||
     typeof data.grid.cols !== "number" ||
@@ -250,13 +302,11 @@ function fromPersistedEditorState(raw: unknown): EditorState | null {
   if (!Array.isArray(data.components)) return null;
   if (!data.camera || typeof data.camera.zoom !== "number") return null;
 
-  // Normalize grid values.
   const nextGrid = {
     cols: Math.max(1, Math.floor(data.grid.cols)),
     rows: Math.max(1, Math.floor(data.grid.rows)),
   };
 
-  // Restore invalid cells + labels safely.
   const restoredInvalid = sanitizeInvalidCells(data.invalidCells, nextGrid);
 
   const restoredLabels = sanitizeInvalidCellLabels({
@@ -265,18 +315,21 @@ function fromPersistedEditorState(raw: unknown): EditorState | null {
     invalidCells: restoredInvalid,
   });
 
-  // Only keep selected invalid key if it still exists in invalidCells.
   const restoredSelectedInvalid =
     typeof data.selectedInvalidCellKey === "string" &&
     restoredInvalid.has(data.selectedInvalidCellKey)
       ? data.selectedInvalidCellKey
       : null;
 
+  const restoredComponents = ensureAutoNames(
+    data.components as EditorState["components"]
+  );
+
   return {
     ...initialEditorState,
     grid: nextGrid,
     invalidCells: restoredInvalid,
-    components: data.components as EditorState["components"],
+    components: restoredComponents,
     camera: data.camera as EditorState["camera"],
     tool: (data.tool ?? initialEditorState.tool) as EditorState["tool"],
     activeComponentType: (data.activeComponentType ??
@@ -285,19 +338,15 @@ function fromPersistedEditorState(raw: unknown): EditorState | null {
       null) as EditorState["selectedComponentId"],
     placeMode: (data.placeMode ??
       initialEditorState.placeMode) as EditorState["placeMode"],
-
-    // viewport is runtime-only; CanvasStage will populate it.
     viewport: { width: 0, height: 0 },
-
-    // Extra fields consumed by Toolbar/Canvas (kept even if not in the base type).
     selectedInvalidCellKey: restoredSelectedInvalid,
     invalidCellLabels: restoredLabels,
   } as unknown as EditorState;
 }
 
 /**
- * Creates a clean editor state with no saved layout selected.
- * This is what the app should show at "/" when no layout is open.
+ * Creates the "blank document" editor state used when no layout is selected.
+ * This ensures refresh behaves predictably: either a layout is open, or it's empty.
  */
 function makeEmptyEditorState(): EditorState {
   return {
@@ -311,13 +360,9 @@ function makeEmptyEditorState(): EditorState {
   } as unknown as EditorState;
 }
 
-// -----------------------
-// Saved layouts storage
-// -----------------------
-
 /**
- * Read the selected layout id from localStorage.
- * This is the lightweight “which layout is open” pointer.
+ * Reads the selected layout id from localStorage.
+ * This acts as the "open document pointer" for refresh behavior.
  */
 function readSelectedLayoutId(): string | null {
   const v = localStorage.getItem(STORAGE_KEY_SELECTED_LAYOUT_ID);
@@ -325,8 +370,8 @@ function readSelectedLayoutId(): string | null {
 }
 
 /**
- * Write (or clear) the selected layout id to localStorage.
- * Clearing selection means the editor will render the empty state.
+ * Writes the selected layout id to localStorage.
+ * Passing null clears selection, meaning the app should show an empty state.
  */
 function writeSelectedLayoutId(id: string | null) {
   if (!id) {
@@ -337,8 +382,8 @@ function writeSelectedLayoutId(id: string | null) {
 }
 
 /**
- * Read saved layouts from localStorage and validate them.
- * Invalid entries are ignored to prevent the UI from crashing.
+ * Reads saved layouts from localStorage and validates each entry.
+ * Corrupt or unsupported entries are ignored to keep the app resilient.
  */
 function readSavedLayouts(): SavedLayoutEntryV1[] {
   const raw = localStorage.getItem(STORAGE_KEY_SAVED_LAYOUTS);
@@ -353,14 +398,12 @@ function readSavedLayouts(): SavedLayoutEntryV1[] {
 
     const o = item as Partial<SavedLayoutEntryV1>;
 
-    // Validate wrapper metadata.
     if (o.schemaVersion !== 1) continue;
     if (typeof o.id !== "string" || o.id.length === 0) continue;
     if (typeof o.name !== "string") continue;
     if (typeof o.createdAt !== "number") continue;
     if (typeof o.updatedAt !== "number") continue;
 
-    // Validate + re-serialize editor data.
     const restored = fromPersistedEditorState(o.data);
     if (!restored) continue;
 
@@ -374,22 +417,21 @@ function readSavedLayouts(): SavedLayoutEntryV1[] {
     });
   }
 
-  // Keep list ordered by "most recently updated" for nicer UX.
   out.sort((a, b) => b.updatedAt - a.updatedAt);
   return out;
 }
 
 /**
- * Persist the saved layouts list to localStorage.
- * This is called whenever `savedLayouts` changes.
+ * Writes the saved layouts array to localStorage.
+ * This is called only when the saved layouts list changes (save/rename/delete).
  */
 function writeSavedLayouts(entries: SavedLayoutEntryV1[]) {
   localStorage.setItem(STORAGE_KEY_SAVED_LAYOUTS, JSON.stringify(entries));
 }
 
 /**
- * Ensure a stored selected id is still present in the layouts array.
- * If not, we treat it as "no layout selected" (render empty editor).
+ * Ensures a selected layout id still exists in the saved layouts array.
+ * If it does not exist, selection is treated as empty.
  */
 function normalizeSelectedId(
   candidate: string | null,
@@ -400,30 +442,26 @@ function normalizeSelectedId(
   return exists ? candidate : null;
 }
 
-// -----------------------
-// Provider implementation
-// -----------------------
-
 export function EditorProvider({ children }: { children: ReactNode }) {
   /**
-   * Saved layouts list is loaded once on startup from localStorage.
-   * The provider owns this data and exposes meta + actions to pages.
+   * Saved layouts are the durable "documents" stored in localStorage.
+   * The provider owns the list and exposes metadata + actions via context.
    */
   const [savedLayouts, setSavedLayouts] = useState<SavedLayoutEntryV1[]>(() => {
     return readSavedLayouts();
   });
 
   /**
-   * Selected layout id is stored separately so refresh can reopen the last layout.
-   * We normalize it against the currently loaded layout list to avoid stale references.
+   * Selected layout id controls which saved layout is opened on load/refresh.
+   * This is separate from editor state so "saved documents" and "current view"
+   * are easy to reason about.
    */
   const [selectedLayoutId, setSelectedLayoutId] = useState<string | null>(
     () => {
       const rawSelected = readSelectedLayoutId();
-      const layouts = readSavedLayouts(); // read once in initializer
+      const layouts = readSavedLayouts();
       const normalized = normalizeSelectedId(rawSelected, layouts);
 
-      // If localStorage had a stale id, clean it immediately (no effect needed).
       if (rawSelected && !normalized) writeSelectedLayoutId(null);
 
       return normalized;
@@ -431,9 +469,9 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   );
 
   /**
-   * The live editor state comes from:
-   * - the selected saved layout (if one is selected)
-   * - otherwise an empty editor state
+   * Editor state is derived from the selected layout:
+   * - if selected: load and restore that snapshot
+   * - if not selected: show a clean, empty state
    */
   const [state, setStateInternal] = useState<EditorState>(() => {
     const layouts = readSavedLayouts();
@@ -448,25 +486,25 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     return restored ?? makeEmptyEditorState();
   });
 
-  // -----------------------
-  // Undo history (single stack)
-  // -----------------------
-
   /**
-   * We keep a single "past" stack for undo.
-   * Redo was intentionally removed for now to keep behavior predictable.
+   * Undo is implemented as a single "past snapshots" stack.
+   * We store whole EditorState snapshots for simplicity and predictability.
    */
   const pastRef = useRef<EditorState[]>([]);
   const [historyLen, setHistoryLen] = useState(0);
 
+  /**
+   * Clears undo history.
+   * Used when switching documents (open/delete/clear selection).
+   */
   const resetHistory = useCallback(() => {
     pastRef.current = [];
     setHistoryLen(0);
   }, []);
 
   /**
-   * Push a snapshot into history while enforcing a max length.
-   * We push PREVIOUS state (not next) so undo returns to that snapshot.
+   * Pushes a snapshot into undo history while enforcing a maximum size.
+   * We push the previous state so Undo returns to that exact snapshot.
    */
   const pushHistory = useCallback((snapshot: EditorState) => {
     const next = pastRef.current.concat(snapshot);
@@ -479,8 +517,8 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   }, []);
 
   /**
-   * History-aware setState exposed to consumers.
-   * Anything using setState directly will become undoable (unless it returns prev).
+   * Public setState wrapper that automatically records undo history.
+   * Any consumer using setState becomes undoable unless the update is a no-op.
    */
   const setState: EditorStateApi["setState"] = useCallback(
     (action) => {
@@ -499,7 +537,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
 
   /**
    * Internal helper used by the typed setters below.
-   * `recordHistory` determines whether the update should be undoable.
+   * recordHistory is used to keep undo focused on layout-affecting changes only.
    */
   const applyUpdate = useCallback(
     (updater: (prev: EditorState) => EditorState, recordHistory: boolean) => {
@@ -512,13 +550,9 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     [pushHistory]
   );
 
-  // -----------------------
-  // Editor actions
-  // -----------------------
-
   /**
-   * Camera updates are NOT undoable.
-   * Reason: zoom/pan changes are continuous and would pollute undo history.
+   * Camera updates are not recorded in undo history.
+   * Pan/zoom are continuous interactions and would crowd out meaningful edits.
    */
   const setCamera = useCallback<EditorStateApi["setCamera"]>(
     (updater) => {
@@ -534,15 +568,20 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   );
 
   /**
-   * Component list updates ARE undoable.
-   * This includes placing, erasing, dragging, and any future renaming/editing.
+   * Component list updates are undoable.
+   * This includes placement, erasing, dragging, and renaming (if implemented).
+   *
+   * The component list is normalized to ensure each item has a stable autoName.
    */
   const setComponents = useCallback<EditorStateApi["setComponents"]>(
     (updater) => {
       applyUpdate((prev) => {
-        const nextComponents = updater(prev.components);
+        const rawNext = updater(prev.components);
 
-        // If a selected component was removed, clear selection automatically.
+        const nextComponents = ensureAutoNames(
+          rawNext as unknown as PlacedComponent[]
+        ) as EditorState["components"];
+
         const nextSelected =
           prev.selectedComponentId &&
           !nextComponents.some((c) => c.id === prev.selectedComponentId)
@@ -560,8 +599,8 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   );
 
   /**
-   * Viewport size updates are NOT undoable.
-   * Viewport is runtime-only and is driven by CanvasStage + ResizeObserver.
+   * Viewport changes are runtime-only (CanvasStage measures the canvas area).
+   * These updates are intentionally excluded from undo history.
    */
   const setViewportSize = useCallback<EditorStateApi["setViewportSize"]>(
     (width, height) => {
@@ -579,11 +618,11 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   );
 
   /**
-   * Grid resizing IS undoable because it materially changes the layout.
-   * We also sanitize:
-   * - invalid cells (drop anything that goes out of bounds)
-   * - components (drop anything out of bounds or now invalid)
-   * - labels and selected invalid key
+   * Grid resizing is undoable because it changes the "document" itself.
+   * The update also enforces consistency by removing out-of-bounds data:
+   * - invalid cells outside bounds
+   * - components outside bounds or that collide with invalid cells
+   * - invalid cell labels and selection are re-sanitized
    */
   const setGrid = useCallback<EditorStateApi["setGrid"]>(
     (cols, rows) => {
@@ -593,7 +632,6 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       applyUpdate((prev) => {
         const nextGrid = { cols: nextCols, rows: nextRows };
 
-        // Keep only invalid cells that remain in bounds.
         const nextInvalid = new Set<string>();
         for (const key of prev.invalidCells) {
           const parsed = parseCellKey(key);
@@ -605,7 +643,6 @@ export function EditorProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        // Remove components that become out of bounds OR now invalid.
         const nextComponents = prev.components.filter((c) => {
           const inBounds =
             c.cell.x >= 0 &&
@@ -652,8 +689,8 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   );
 
   /**
-   * Tool and mode changes are NOT undoable.
-   * Reason: they do not change the layout output, only user interaction mode.
+   * Tool and mode toggles are interaction-only; they do not change the layout output.
+   * These updates are not recorded in undo history.
    */
   const setTool = useCallback<EditorStateApi["setTool"]>(
     (tool) => {
@@ -700,17 +737,16 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   );
 
   /**
-   * Invalid cell set updates ARE undoable.
-   * We also enforce consistency:
-   * - any component that now sits on an invalid cell is removed
-   * - labels + selection are sanitized
+   * Invalid cell updates are undoable because they directly change the usable layout.
+   * When invalid cells change, we enforce consistency by:
+   * - removing any components that now collide with invalid cells
+   * - sanitizing labels and selected invalid key
    */
   const setInvalidCells = useCallback<EditorStateApi["setInvalidCells"]>(
     (updater) => {
       applyUpdate((prev) => {
         const nextInvalid = updater(prev.invalidCells);
 
-        // Drop any components that now collide with invalid cells.
         const nextComponents = prev.components.filter((c) => {
           const k = cellKey(c.cell);
           return !nextInvalid.has(k);
@@ -749,12 +785,12 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   );
 
   /**
-   * Toggle a single invalid cell on/off (undoable).
+   * Toggles a single cell as invalid/valid (undoable).
    *
-   * Behavior:
-   * - Turning a cell invalid removes any component in that cell.
-   * - Turning a cell valid removes its label (if present).
-   * - Selection is kept consistent (cleared if the selected invalid is removed).
+   * Rules:
+   * - if a cell becomes invalid, any component in that cell is removed
+   * - if a cell becomes valid, its label is removed
+   * - selected invalid key is cleared if the selected cell is removed
    */
   const toggleInvalidCell = useCallback<EditorStateApi["toggleInvalidCell"]>(
     (cell) => {
@@ -767,12 +803,10 @@ export function EditorProvider({ children }: { children: ReactNode }) {
         if (willBeInvalid) nextInvalid.add(k);
         else nextInvalid.delete(k);
 
-        // If cell becomes invalid, remove any component in that cell.
         const nextComponents = willBeInvalid
           ? prev.components.filter((c) => cellKey(c.cell) !== k)
           : prev.components;
 
-        // If cell becomes valid, its label is no longer relevant.
         const prevLabels =
           (prev as unknown as { invalidCellLabels?: Record<string, string> })
             .invalidCellLabels ?? {};
@@ -783,7 +817,6 @@ export function EditorProvider({ children }: { children: ReactNode }) {
           prev as unknown as { selectedInvalidCellKey?: unknown }
         ).selectedInvalidCellKey;
 
-        // If we removed the selected invalid cell, clear selection.
         const nextSelectedInvalid = willBeInvalid
           ? (prevSelectedInvalid as string | null)
           : typeof prevSelectedInvalid === "string" && prevSelectedInvalid === k
@@ -804,9 +837,8 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   );
 
   /**
-   * Undo:
-   * - Pops the last snapshot from history and applies it.
-   * - Preserves the current viewport because viewport is runtime-only.
+   * Undo applies the latest snapshot from the history stack.
+   * viewport is preserved because it is runtime-only and should not be undone.
    */
   const undo = useCallback(() => {
     const past = pastRef.current;
@@ -824,41 +856,31 @@ export function EditorProvider({ children }: { children: ReactNode }) {
 
   const canUndo = historyLen > 0;
 
-  // -----------------------
-  // Persistence: localStorage sync
-  // -----------------------
-
   /**
-   * Persist the saved layouts list whenever it changes.
-   * This is intentionally decoupled from `state` changes because:
-   * - state changes happen frequently (dragging, typing)
-   * - layouts only change on explicit actions (save/rename/delete)
+   * Persist the saved layouts list when it changes.
+   * Editor changes do not write here; only explicit save/rename/delete affects the list.
    */
   useEffect(() => {
     writeSavedLayouts(savedLayouts);
   }, [savedLayouts]);
 
   /**
-   * Persist the selected layout pointer whenever it changes.
-   * This drives refresh behavior: if an id exists, the app loads that layout.
+   * Persist the selected layout pointer.
+   * This drives which layout will be restored after a browser refresh.
    */
   useEffect(() => {
     writeSelectedLayoutId(selectedLayoutId);
   }, [selectedLayoutId]);
 
-  // -----------------------
-  // Saved layout actions
-  // -----------------------
-
   /**
-   * Save the current editor state into the saved layout list.
+   * Saves the current editor state into the saved layouts list.
    *
-   * Modes:
-   * - Create new (no id provided): generates id and default name.
-   * - Overwrite (id provided): updates that entry if it exists, or creates it if missing.
+   * Behavior:
+   * - if args.id is provided: overwrite that entry (or create it if missing)
+   * - otherwise: create a new entry with a generated id
    *
    * After saving:
-   * - we setSelectedLayoutId(id) so refresh reliably opens the saved layout.
+   * - the saved layout becomes selected so refresh reopens it
    */
   const saveLayout = useCallback<EditorStateApi["saveLayout"]>(
     (args?: SaveLayoutArgs) => {
@@ -875,9 +897,6 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       setSavedLayouts((prev) => {
         const existing = prev.find((l) => l.id === id);
 
-        // Default name selection:
-        // - If overwriting: keep existing name unless a new name is provided.
-        // - If creating: "Layout N" (based on current count).
         const defaultCreateName = `Layout ${prev.length + 1}`;
         const finalName =
           providedName.length > 0
@@ -896,8 +915,6 @@ export function EditorProvider({ children }: { children: ReactNode }) {
         };
 
         const without = prev.filter((l) => l.id !== id);
-
-        // Store most recently updated first for the Saved Layouts page.
         return [nextEntry, ...without];
       });
 
@@ -909,12 +926,13 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   );
 
   /**
-   * Open a saved layout by id.
+   * Loads a saved layout into the editor.
    *
-   * Behavior:
-   * - If layout is missing/corrupt: clears selection and loads empty state.
-   * - Resets undo history because “switching documents” should start fresh.
-   * - Preserves current viewport runtime values.
+   * Failure behavior:
+   * - missing/corrupt layouts clear selection and load empty state
+   *
+   * Undo history is reset because opening a different layout is a document switch.
+   * viewport is preserved because it reflects current canvas size, not document data.
    */
   const openLayout = useCallback<EditorStateApi["openLayout"]>(
     (id) => {
@@ -952,8 +970,8 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   );
 
   /**
-   * Rename a saved layout (metadata-only).
-   * This does not affect the editor state directly.
+   * Renames a saved layout (metadata only).
+   * The editor content is not modified by this action.
    */
   const renameLayout = useCallback<EditorStateApi["renameLayout"]>(
     (id, name) => {
@@ -970,11 +988,8 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   );
 
   /**
-   * Delete a saved layout.
-   *
-   * Important:
-   * - If the deleted layout is currently selected, we immediately clear selection
-   *   and reset the editor to the empty state (no effects required).
+   * Deletes a saved layout entry.
+   * If the deleted entry is currently selected, the editor resets to empty immediately.
    */
   const deleteLayout = useCallback<EditorStateApi["deleteLayout"]>(
     (id) => {
@@ -996,8 +1011,8 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   );
 
   /**
-   * Clear the selected layout id and reset the editor to a clean empty state.
-   * This is used by the Saved Layouts page “New empty” action.
+   * Clears the selected layout id and resets the editor.
+   * Intended for a "New empty layout" action on the Saved Layouts page.
    */
   const clearSelectedLayout = useCallback<
     EditorStateApi["clearSelectedLayout"]
@@ -1011,11 +1026,8 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   }, [resetHistory]);
 
   /**
-   * Expose saved layout metadata only (not the full stored state),
-   * so consumers don’t re-render on every editor change.
-   *
-   * This was previously a performance issue: returning the full entries
-   * (which embed `data`) created new objects too frequently.
+   * Exposes layout metadata only (not the full stored state payload).
+   * This avoids rerenders in consumers when the embedded snapshot data changes.
    */
   const savedLayoutsMeta = useMemo<SavedLayoutMeta[]>(() => {
     return savedLayouts.map((l) => ({
@@ -1027,8 +1039,8 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   }, [savedLayouts]);
 
   /**
-   * Build the API object provided through context.
-   * We memoize it so consumers only re-render when relevant pieces change.
+   * Memoized API exposed through context.
+   * Consumers will re-render only when the referenced values change.
    */
   const api = useMemo<EditorStateApi>(() => {
     return {
