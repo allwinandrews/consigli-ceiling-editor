@@ -136,21 +136,6 @@ export function ZoomControl() {
     setZoomAtViewportCenter(1);
   };
 
-  // Shared button styling for consistent UI.
-  const baseBtn: React.CSSProperties = {
-    height: 36,
-    borderRadius: 10,
-    border: "1px solid #d1d5db",
-    background: "#ffffff",
-    color: "#111827",
-    fontWeight: 800,
-    cursor: "pointer",
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    userSelect: "none",
-  };
-
   /**
    * Hide the "100%" button when we're already at 100%.
    * This avoids redundant UI and keeps the control compact.
@@ -158,27 +143,12 @@ export function ZoomControl() {
   const showReset = livePercent !== 100;
 
   return (
-    <div
-      style={{
-        position: "absolute",
-        right: 16,
-        bottom: 16,
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: 10,
-        borderRadius: 14,
-        background: "rgba(255,255,255,0.95)",
-        border: "1px solid rgba(229,231,235,0.9)",
-        boxShadow: "0 16px 36px rgba(0,0,0,0.14)",
-        backdropFilter: "blur(8px)",
-      }}
-    >
+    <div className="zoomCtrl">
       {showReset ? (
         <button
           type="button"
           onClick={reset}
-          style={{ ...baseBtn, padding: "0 12px" }}
+          className="zoomBtn zoomBtnWide"
           title="Reset zoom to 100%"
         >
           100%
@@ -188,26 +158,15 @@ export function ZoomControl() {
       <button
         type="button"
         onClick={() => step("out")}
-        style={{ ...baseBtn, width: 38 }}
+        className="zoomBtn zoomBtnIcon"
         aria-label="Zoom out"
         title="Zoom out"
       >
         −
       </button>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "0 8px",
-            height: 36,
-            borderRadius: 10,
-            border: "1px solid #d1d5db",
-            background: "#ffffff",
-          }}
-        >
+      <div className="zoomInputWrap">
+        <div className="zoomInputBox">
           <input
             value={percentInput}
             onChange={(e) => setDraft(e.target.value)}
@@ -226,27 +185,17 @@ export function ZoomControl() {
               }
             }}
             inputMode="numeric"
-            style={{
-              width: 56,
-              border: "none",
-              outline: "none",
-              background: "transparent",
-              color: "#111827",
-              fontWeight: 800,
-              fontSize: 13,
-            }}
+            className="zoomInput"
             aria-label="Zoom percent"
           />
-          <span style={{ color: "#6b7280", fontWeight: 900, fontSize: 12 }}>
-            %
-          </span>
+          <span className="zoomPercent">%</span>
         </div>
       </div>
 
       <button
         type="button"
         onClick={() => step("in")}
-        style={{ ...baseBtn, width: 38 }}
+        className="zoomBtn zoomBtnIcon"
         aria-label="Zoom in"
         title="Zoom in"
       >

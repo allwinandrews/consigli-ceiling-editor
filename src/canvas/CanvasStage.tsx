@@ -1294,12 +1294,8 @@ export function CanvasStage() {
   return (
     <canvas
       ref={canvasRef}
-      style={{
-        width: "100%",
-        height: "100%",
-        display: "block",
-        touchAction: "none",
-      }}
+      className="canvasStage"
+      aria-label="Ceiling editor canvas"
     />
   );
 }

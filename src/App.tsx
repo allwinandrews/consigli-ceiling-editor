@@ -47,59 +47,32 @@ function App() {
   );
 
   return (
-    <div
-      style={{
-        height: "100vh",
-        width: "100vw",
-        display: "flex",
-        flexDirection: "column",
-        background: "#f3f4f6",
-        overflow: "hidden",
-      }}
-    >
-      {/*
-        Global navigation and app-level controls.
-        Keeping this outside <Routes> ensures it never unmounts during navigation.
-      */}
+    /**
+     * App layout uses simple class-based styling instead of large inline objects:
+     * - Keeps layout rules consistent and easier to maintain
+     * - Avoids style duplication across files as the UI grows
+     * - Makes theme/layout adjustments low-risk (single place to change)
+     */
+    <div className="appShell">
+      {/* Keeping Navbar outside <Routes> ensures it never unmounts during navigation. */}
       <Navbar isSidebarOpen={isSidebarOpen} onToggleSidebar={toggleSidebar} />
 
-      {/*
-        The content area fills the remaining height. `minHeight: 0` is important
-        when using flex layouts to allow children to properly shrink and avoid
-        overflow issues (especially for scrollable/canvas content).
-      */}
-      <div style={{ flex: 1, minHeight: 0 }}>
+      {/* `minHeight: 0` via CSS is important for flex children to shrink correctly. */}
+      <div className="appContent">
         <Routes>
-          {/*
-            Editor (new/empty layout).
-            EditorPage will initialize from persisted state or defaults based on
-            your state layer rules.
-          */}
+          {/* Editor (new/empty layout). */}
           <Route path="/" element={editorPageEl} />
 
-          {/*
-            Saved layouts list page (view, rename, open).
-            This page does not need editor sidebar props.
-          */}
+          {/* Saved layouts list page (view, rename, open). */}
           <Route path="/saved" element={<SavedLayoutsPage />} />
 
-          {/*
-            Editor for a specific saved layout.
-            EditorPage reads `id` from the route params and loads the layout.
-          */}
+          {/* Editor for a specific saved layout. */}
           <Route path="/saved/:id" element={editorPageEl} />
 
-          {/*
-            Take-home friendly documentation page: controls, assumptions,
-            scalability notes, etc.
-          */}
+          {/* Take-home documentation page: controls, assumptions, scalability notes, etc. */}
           <Route path="/about" element={<AboutPage />} />
 
-          {/*
-            Fallback route:
-            - Redirect any unknown path back to the editor home.
-            - `replace` avoids polluting browser history with invalid routes.
-          */}
+          {/* Redirect unknown routes back to the editor home. */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </div>

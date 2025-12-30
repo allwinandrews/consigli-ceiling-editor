@@ -1,10 +1,7 @@
 :root {
   /*
    * Base typography for the entire application.
-   * Using system fonts ensures:
-   * - Fast loading (no web fonts)
-   * - Native look & feel across OSes
-   * - Predictable rendering for a take-home test
+   * System fonts keep the take-home fast to load and consistent across OSes.
    */
   font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial,
     sans-serif;
@@ -12,31 +9,58 @@
   font-weight: 400;
 
   /*
-   * Force a consistent LIGHT color scheme.
-   * This prevents browsers from auto-darkening inputs/buttons
-   * when the OS is in dark mode.
+   * Enforce a LIGHT color scheme to prevent OS dark-mode overrides on controls.
    */
   color-scheme: light;
 
   /*
-   * Default text and background colors.
-   * These match the neutral gray palette used throughout the UI.
+   * Design tokens:
+   * A small set of variables makes the UI consistent and easy to tune.
+   * The base is neutral with restrained accents for interactive elements.
    */
-  color: #111827;
-  background-color: #f3f4f6;
+  --bg: #f3f4f6;
+  --surface: #ffffff;
+  --surface-2: #f9fafb;
+  --text: #111827;
+  --muted: #6b7280;
+  --muted-2: #374151;
+  --border: #e5e7eb;
+  --border-strong: #d1d5db;
+
+  /* Minimal accents used for active states and subtle feedback */
+  --accent: #2563eb; /* blue */
+  --accent-2: #f59e0b; /* amber */
+
+  /* Focus ring for keyboard navigation */
+  --focus: rgba(37, 99, 235, 0.35);
 
   /*
-   * Improve text clarity and readability.
-   * These are safe defaults for modern UI work.
+   * Motion tokens:
+   * Keep transitions consistent, subtle, and professional across the UI.
    */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --t-fast: 140ms;
+  --t-med: 180ms;
+
+  /*
+   * Elevation tokens:
+   * Used for hover feedback and floating UI (cards, popovers, zoom control).
+   */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-2: 0 10px 24px rgba(0, 0, 0, 0.1);
+  --shadow-3: 0 16px 36px rgba(0, 0, 0, 0.14);
+
+  color: var(--text);
+  background-color: var(--bg);
+
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 /*
- * Ensure the app can reliably fill the entire viewport height.
- * Required for layouts that use flex + 100% height containers.
+ * Ensure the app can reliably fill the viewport height.
+ * Required for layouts that use flex + full-height containers.
  */
 html,
 body,
@@ -45,37 +69,940 @@ body,
 }
 
 /*
- * Remove default browser margins and enforce
- * the same background color as the root.
+ * Remove browser default margins and keep a consistent background.
  */
 body {
   margin: 0;
-  background: #f3f4f6;
+  background: var(--bg);
 }
 
 /*
- * Minimal, sane defaults for links.
- * Avoids aggressive global styling so components
- * remain in control of their own appearance.
+ * Minimal defaults for links.
+ * Components can still override styling locally when needed.
  */
 a {
-  color: #2563eb;
+  color: var(--accent);
   text-decoration: none;
-}
-
-a:hover {
-  text-decoration: underline;
+  transition: color var(--t-fast) var(--ease-out);
 }
 
 /*
- * Important: DO NOT globally style buttons or inputs heavily.
- * Each component (Toolbar, Navbar, dialogs, etc.) owns its UI.
- *
- * We only inherit the font so controls stay visually consistent
- * with surrounding text.
+ * Hover underline is handled using a background-size trick.
+ * This reads cleaner than abrupt underline toggles.
+ */
+a:not(.navBarLink) {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  background-size: 0% 2px;
+  transition: background-size var(--t-med) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+a:not(.navBarLink):hover {
+  background-size: 100% 2px;
+}
+
+/*
+ * Keep controls visually consistent with surrounding text.
+ * Avoid heavy global styling so components keep ownership of their UI.
  */
 button,
 input,
 select {
   font: inherit;
+}
+
+/*
+ * A predictable baseline for clickables.
+ * Buttons/links still define their own visuals, but the interaction feels consistent.
+ */
+button {
+  cursor: pointer;
+}
+
+/*
+ * Keyboard focus:
+ * Use :focus-visible so mouse users don’t get distracting outlines,
+ * while keyboard users still get a clear focus indicator.
+ */
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/*
+ * Respect reduced motion preferences.
+ * Hover feedback remains but without movement/animation.
+ */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* ------------------------------------------------------------------
+ * App-level layout primitives
+ * ------------------------------------------------------------------ */
+
+.appShell {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.appContent {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------------
+ * Navbar
+ * ------------------------------------------------------------------ */
+
+.navBar {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex: 0 0 auto;
+}
+
+.navBarLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.navBarTitleBlock {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.navBarTitle {
+  font-weight: 950;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.navBarPill {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  padding: 4px 8px;
+  border-radius: 999px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.navBarNav {
+  display: flex;
+  gap: 8px;
+}
+
+/*
+ * Nav links behave like "tabs" — hover is a soft tint, active is slightly stronger.
+ * Avoid large movement here so the navbar stays visually stable.
+ */
+.navBarLink {
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 900;
+  text-decoration: none;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  color: var(--muted-2);
+  background: transparent;
+  transition: background var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.navBarLink:hover {
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--text);
+}
+
+.navBarLinkActive {
+  color: var(--text);
+  background: rgba(37, 99, 235, 0.1);
+  border-color: rgba(37, 99, 235, 0.2);
+  position: relative;
+}
+
+/*
+ * Small underline helps active state read instantly without heavy fill.
+ */
+.navBarLinkActive::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 6px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent);
+  opacity: 0.7;
+}
+
+.navBarIconButton {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  transition: background var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out);
+}
+
+.navBarIconButton:hover {
+  background: rgba(37, 99, 235, 0.06);
+  border-color: rgba(37, 99, 235, 0.22);
+}
+
+.navBarIconButton:active {
+  transform: translateY(1px);
+}
+
+.navBarAuthor {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.navBarAuthorName {
+  color: var(--text);
+}
+
+/* ------------------------------------------------------------------
+ * Toolbar
+ * ------------------------------------------------------------------ */
+
+.tbRoot {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tbHeader {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.tbHeaderLeft {
+  flex: 1;
+  min-width: 0;
+}
+
+.tbHeaderTitle {
+  font-size: 16px;
+  font-weight: 900;
+  color: var(--text);
+}
+
+.tbHeaderSub {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tbStrong {
+  color: var(--text);
+}
+
+.tbHeaderActions {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.tbSaveBtn {
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(37, 99, 235, 0.35);
+  background: var(--accent);
+  color: #ffffff;
+  font-weight: 900;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: var(--shadow-1);
+  transition: transform var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out),
+    filter var(--t-fast) var(--ease-out);
+}
+
+.tbSaveBtn:hover {
+  filter: brightness(1.02);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-2);
+}
+
+.tbSaveBtn:active {
+  transform: translateY(0px);
+  box-shadow: var(--shadow-1);
+}
+
+.tbIconBtn {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 900;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  transition: background var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
+}
+
+.tbIconBtn:hover {
+  background: rgba(37, 99, 235, 0.06);
+  border-color: rgba(37, 99, 235, 0.22);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-1);
+}
+
+.tbIconBtn:active {
+  transform: translateY(0px);
+  box-shadow: none;
+}
+
+.tbInlineFlex {
+  display: inline-flex;
+}
+
+.tbTooltipAnchor {
+  display: inline-flex;
+  align-items: center;
+  position: relative;
+}
+
+.tbInfoIcon {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 900;
+  color: var(--muted);
+  background: var(--surface);
+  cursor: help;
+  line-height: 1;
+  user-select: none;
+}
+
+.tbColorSwatch {
+  border-radius: 6px;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+.tbCard {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  overflow: hidden;
+  box-shadow: 0 0 0 rgba(0, 0, 0, 0);
+  transition: transform var(--t-med) var(--ease-out),
+    box-shadow var(--t-med) var(--ease-out),
+    border-color var(--t-med) var(--ease-out);
+}
+
+.tbCard:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-2);
+  border-color: rgba(37, 99, 235, 0.22);
+}
+
+.tbCardHeader {
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: var(--surface);
+}
+
+.tbCardHeaderLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.tbCardTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tbCardTitle {
+  font-size: 12px;
+  font-weight: 900;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tbCardHint {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tbCardHeaderBtn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 12px;
+  padding: 8px 10px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-weight: 900;
+  transition: background var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out);
+}
+
+.tbCardHeaderBtn:hover {
+  background: rgba(37, 99, 235, 0.06);
+  border-color: rgba(37, 99, 235, 0.22);
+  transform: translateY(-1px);
+}
+
+.tbCardHeaderBtn:active {
+  transform: translateY(0px);
+}
+
+.tbCardPanel {
+  padding: 12px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.tbGridInputsRow {
+  display: flex;
+  gap: 10px;
+}
+
+.tbGridField {
+  flex: 1;
+}
+
+.tbFieldLabel {
+  font-size: 12px;
+  color: var(--muted-2);
+  margin-bottom: 6px;
+}
+
+.tbInput {
+  width: 100%;
+  padding: 10px 10px;
+  font-size: 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
+}
+
+.tbInput:focus-visible {
+  border-color: rgba(37, 99, 235, 0.45);
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+}
+
+.tbError {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #b91c1c;
+}
+
+.tbApplyBtn {
+  padding: 10px 10px;
+  font-size: 13px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  width: 100%;
+  margin-top: 10px;
+  font-weight: 800;
+  background: var(--surface-2);
+  cursor: pointer;
+  box-shadow: var(--shadow-1);
+  transition: transform var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out),
+    background var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+
+.tbApplyBtn:hover {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.35);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-2);
+}
+
+.tbApplyBtn:active {
+  transform: translateY(0px);
+  box-shadow: var(--shadow-1);
+}
+
+.tbMuted {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tbToolGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.tbToolBtn {
+  padding: 10px 10px;
+  font-size: 13px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  font-weight: 800;
+  background: var(--surface);
+  cursor: pointer;
+  box-shadow: var(--shadow-1);
+  transition: transform var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out),
+    background var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+
+.tbToolBtn:hover {
+  background: rgba(37, 99, 235, 0.06);
+  border-color: rgba(37, 99, 235, 0.22);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-2);
+}
+
+.tbToolBtn:active {
+  transform: translateY(0px);
+  box-shadow: var(--shadow-1);
+}
+
+/* ------------------------------------------------------------------
+ * ZoomControl
+ * ------------------------------------------------------------------ */
+
+.zoomCtrl {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(229, 231, 235, 0.9);
+  box-shadow: var(--shadow-3);
+  backdrop-filter: blur(8px);
+}
+
+.zoomBtn {
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 800;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  transition: transform var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out),
+    background var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+
+.zoomBtn:hover {
+  background: rgba(37, 99, 235, 0.06);
+  border-color: rgba(37, 99, 235, 0.22);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-1);
+}
+
+.zoomBtn:active {
+  transform: translateY(0px);
+  box-shadow: none;
+}
+
+.zoomBtnWide {
+  padding: 0 12px;
+}
+
+.zoomBtnIcon {
+  width: 38px;
+}
+
+.zoomInputWrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.zoomInputBox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+}
+
+.zoomInput {
+  width: 56px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-weight: 800;
+  font-size: 13px;
+}
+
+.zoomPercent {
+  color: var(--muted);
+  font-weight: 900;
+  font-size: 12px;
+}
+
+/* ------------------------------------------------------------------
+ * SavedLayoutsPage
+ * ------------------------------------------------------------------ */
+
+.savedPage {
+  height: 100%;
+  padding: 16px;
+  box-sizing: border-box;
+  overflow: auto;
+}
+
+.savedHeaderRow {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.savedHeaderLeft {
+  min-width: 0;
+}
+
+.savedTitle {
+  font-size: 18px;
+  font-weight: 900;
+  color: var(--text);
+}
+
+.savedSub {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.savedHeaderActions {
+  display: inline-flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.savedBtn {
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 900;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  box-shadow: var(--shadow-1);
+  transition: transform var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out),
+    background var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+
+.savedBtn:hover {
+  background: rgba(37, 99, 235, 0.06);
+  border-color: rgba(37, 99, 235, 0.22);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-2);
+}
+
+.savedBtn:active {
+  transform: translateY(0px);
+  box-shadow: var(--shadow-1);
+}
+
+.savedBtnPrimary {
+  background: var(--accent);
+  border-color: rgba(37, 99, 235, 0.35);
+  color: #ffffff;
+}
+
+.savedBtnPrimary:hover {
+  filter: brightness(1.02);
+}
+
+.savedCard {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 14px;
+  padding: 12px;
+  box-shadow: 0 0 0 rgba(0, 0, 0, 0);
+  transition: transform var(--t-med) var(--ease-out),
+    box-shadow var(--t-med) var(--ease-out),
+    border-color var(--t-med) var(--ease-out);
+}
+
+.savedCard:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-2);
+  border-color: rgba(37, 99, 235, 0.18);
+}
+
+.savedListWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.savedErrorCard {
+  border-color: #fecaca;
+  background: #fff1f2;
+  color: #991b1b;
+}
+
+.savedErrorTitle {
+  font-weight: 900;
+  font-size: 12px;
+}
+
+.savedErrorText {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.savedEmptyTitle {
+  font-size: 14px;
+  font-weight: 900;
+  color: var(--text);
+}
+
+.savedEmptySub {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.savedRow {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.savedRowLeft {
+  flex: 1;
+  min-width: 0;
+}
+
+.savedLayoutName {
+  font-size: 14px;
+  font-weight: 900;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.savedRenameInput {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  outline: none;
+  font-size: 13px;
+  font-weight: 900;
+  color: var(--text);
+  box-sizing: border-box;
+  background: var(--surface);
+  transition: border-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
+}
+
+.savedRenameInput:focus-visible {
+  border-color: rgba(37, 99, 235, 0.45);
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+}
+
+.savedMeta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.savedMetaStrong {
+  color: var(--text);
+}
+
+.savedRowActions {
+  display: inline-flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ------------------------------------------------------------------
+ * AboutPage
+ * ------------------------------------------------------------------ */
+
+.aboutPage {
+  padding: 16px;
+  display: flex;
+  justify-content: center;
+}
+
+.aboutCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 16px;
+  max-width: 900px;
+  width: 100%;
+  box-sizing: border-box;
+  box-shadow: var(--shadow-1);
+}
+
+.aboutH2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 950;
+  color: var(--text);
+}
+
+.aboutP {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--muted-2);
+  line-height: 1.55;
+}
+
+.aboutList {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: var(--muted-2);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.aboutSpacer {
+  height: 12px;
+}
+
+/* ------------------------------------------------------------------
+ * EditorPage
+ * ------------------------------------------------------------------ */
+
+.editorRoot {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  overflow: hidden;
+}
+
+.editorSidebar {
+  width: 320px;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  padding: 16px;
+  box-sizing: border-box;
+  overflow-y: auto;
+  flex-shrink: 0;
+
+  transition: transform var(--t-med) var(--ease-out);
+  will-change: transform;
+
+  position: relative;
+  z-index: 2;
+}
+
+.editorMain {
+  flex: 1;
+  min-width: 0; /* allows the canvas to shrink correctly in flex layouts */
+  position: relative;
+  overflow: hidden;
+}
+
+/* ------------------------------------------------------------------
+ * CanvasStage
+ * ------------------------------------------------------------------
+ * Canvas is sized by CSS so the backing buffer can track client size.
+ * touch-action is disabled so pointer events behave consistently on touch/trackpads.
+ */
+.canvasStage {
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
 }

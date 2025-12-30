@@ -6,6 +6,7 @@ import {
   useRef,
   useEffect,
   type ReactElement,
+  useCallback,
 } from "react";
 import { createPortal } from "react-dom";
 
@@ -17,18 +18,18 @@ import type {
 } from "../types/editor";
 
 /**
- * Toolbar UI for the ceiling editor.
+ * Toolbar for the ceiling editor.
  *
- * Responsibilities:
- * - Grid sizing controls (rows/cols) and apply validation
+ * What lives here:
+ * - Grid sizing inputs (draft values + apply validation)
  * - Tool selection (PAN / SELECT / PLACE / ERASE)
- * - Component palette (component cards + invalid-cell mode)
- * - Status panel (what exists, where it is, select/rename/delete)
+ * - Component palette (component cards + invalid cell mode)
+ * - Status list (select, rename, delete)
  * - High-level actions (save, undo, clear)
  *
- * This component keeps some UI-only state (input drafts, accordion open/closed).
- * When external state changes (e.g., loading a saved layout), we sync drafts so
- * the toolbar always reflects the currently active editor state.
+ * Styling approach:
+ * - Most visuals are driven by scoped CSS classes (tb*)
+ * - Inline styles are reserved for state-driven colors (active/selected/type colors)
  */
 const TOOLS: EditorTool[] = ["PAN", "SELECT", "PLACE", "ERASE"];
 
@@ -37,9 +38,7 @@ const GRID_MAX_HARD = 1000;
 
 /**
  * Shared semantic colors for the editor.
- *
- * Keeping a single palette across the toolbar and canvas makes the interface
- * easier to learn: the same type always maps to the same highlight color.
+ * These colors are used consistently across toolbar + canvas.
  */
 const TYPE_COLOR: Record<ComponentType | "INVALID_CELL", string> = {
   LIGHT: "#f59e0b", // amber
@@ -50,13 +49,9 @@ const TYPE_COLOR: Record<ComponentType | "INVALID_CELL", string> = {
 };
 
 /**
- * Component palette shown as clickable cards.
- *
- * Each definition provides:
- * - label: user-facing name
- * - value: domain type stored in state
- * - short: prefix used when the app generates stable default names (L1, AS1, ...)
- * - icon: small inline SVG used in the card
+ * Component palette shown as selectable cards.
+ * - short is used to build stable auto-names (L1, AS1, ...)
+ * - icon is a small inline SVG rendered inside the card
  */
 const COMPONENTS: {
   label: string;
@@ -131,11 +126,10 @@ type FilterValue = "ALL" | ComponentType | "INVALID_CELL";
 type StatusGroupType = ComponentType | "INVALID_CELL";
 
 /**
- * Normalized row used by the Status panel.
- *
- * We merge two concepts into a single list model:
+ * Normalized row used by the Status list.
+ * We merge:
  * - placed components (id = component id)
- * - invalid cells (id = "x,y" cell key)
+ * - invalid cells (id = "x,y")
  */
 type ListItem = {
   id: string;
@@ -147,8 +141,8 @@ type ListItem = {
 };
 
 /**
- * Clamp and normalize numeric user input.
- * Inputs can be empty or invalid while typing; we only enforce bounds on apply.
+ * Clamp numeric values safely.
+ * The UI allows temporary invalid drafts; bounds are enforced on apply.
  */
 function clampInt(value: number, min: number, max: number) {
   if (Number.isNaN(value)) return min;
@@ -156,10 +150,8 @@ function clampInt(value: number, min: number, max: number) {
 }
 
 /**
- * Returns the portal mount used by tooltips.
- *
- * Tooltips must escape the toolbar overflow clipping; portalling to body avoids
- * tooltips being cut off by scroll containers.
+ * Returns document.body once on mount.
+ * Used for tooltips so they are not clipped by scroll/overflow containers.
  */
 function useBodyPortal(): HTMLElement | null {
   const [body] = useState<HTMLElement | null>(() => {
@@ -169,28 +161,14 @@ function useBodyPortal(): HTMLElement | null {
 }
 
 /**
- * Minimal "info" badge used as tooltip anchor.
- * We keep it keyboard focusable via the Tooltip wrapper span.
+ * Small "info" badge used as a tooltip anchor.
+ * Visual styling is owned by the global tbInfoIcon class.
  */
 function InfoIcon({ size = 18 }: { size?: number }) {
   return (
     <span
-      style={{
-        width: size,
-        height: size,
-        borderRadius: 999,
-        border: "1px solid #e5e7eb",
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        fontSize: 12,
-        fontWeight: 900,
-        color: "#6b7280",
-        background: "#ffffff",
-        cursor: "help",
-        lineHeight: 1,
-        userSelect: "none",
-      }}
+      className="tbInfoIcon"
+      style={{ width: size, height: size }}
       aria-hidden="true"
     >
       i
@@ -199,8 +177,8 @@ function InfoIcon({ size = 18 }: { size?: number }) {
 }
 
 /**
- * Chevron used by accordion headers.
- * Rotation indicates the open/closed state.
+ * Chevron used in accordion headers.
+ * Rotation indicates open/closed state.
  */
 function ChevronIcon({ size = 16, open }: { size?: number; open: boolean }) {
   return (
@@ -228,7 +206,7 @@ function ChevronIcon({ size = 16, open }: { size?: number; open: boolean }) {
 }
 
 /**
- * Trash icon used for delete actions in the Status panel.
+ * Trash icon used for delete actions in the Status list.
  */
 function TrashIcon({ size = 16 }: { size?: number }) {
   return (
@@ -254,11 +232,11 @@ function TrashIcon({ size = 16 }: { size?: number }) {
 /**
  * Tooltip
  *
- * Lightweight, dependency-free tooltip:
- * - Portals to body to avoid overflow clipping
- * - Opens on hover and focus
- * - Closes on mouse leave, blur, or Escape
- * - Uses fixed positioning so it stays anchored while scrolling
+ * Dependency-free tooltip:
+ * - portals to body (prevents clipping)
+ * - opens on hover and focus
+ * - closes on mouse leave, blur, or Escape
+ * - fixed positioning so it stays aligned during scrolling
  */
 function Tooltip({
   text,
@@ -278,7 +256,7 @@ function Tooltip({
     top: 0,
   });
 
-  const updatePos = () => {
+  const updatePos = useCallback(() => {
     const el = anchorRef.current;
     if (!el) return;
 
@@ -293,7 +271,7 @@ function Tooltip({
     top = Math.max(pad, Math.min(window.innerHeight - pad, top));
 
     setPos({ left, top });
-  };
+  }, [width]);
 
   useEffect(() => {
     if (!open) return;
@@ -310,13 +288,7 @@ function Tooltip({
       window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", onResize);
     };
-  }, [open, width]);
-
-  const anchorStyle: CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    position: "relative",
-  };
+  }, [open, updatePos]);
 
   const tipStyle: CSSProperties = {
     position: "fixed",
@@ -339,7 +311,7 @@ function Tooltip({
     <>
       <span
         ref={anchorRef}
-        style={anchorStyle}
+        className="tbTooltipAnchor"
         tabIndex={0}
         role="button"
         aria-label="Help"
@@ -363,18 +335,15 @@ function Tooltip({
 
 /**
  * Small color marker used to visually reinforce grouping.
- * This is used in both headers and list rows.
  */
 function ColorSwatch({ color, size = 14 }: { color: string; size?: number }) {
   return (
     <span
+      className="tbColorSwatch"
       style={{
         width: size,
         height: size,
-        borderRadius: 6,
         background: color,
-        display: "inline-block",
-        flex: "0 0 auto",
       }}
       aria-hidden="true"
     />
@@ -384,8 +353,8 @@ function ColorSwatch({ color, size = 14 }: { color: string; size?: number }) {
 /**
  * AccordionSection
  *
- * Reusable collapsible card used throughout the toolbar for a compact layout.
- * ARIA wiring ensures the header controls a region for accessibility.
+ * Collapsible card used throughout the toolbar.
+ * ARIA wiring ensures the header controls a labeled region.
  */
 function AccordionSection({
   id,
@@ -407,80 +376,12 @@ function AccordionSection({
   const headerId = `${id}-header`;
   const panelId = `${id}-panel`;
 
-  const cardStyle: CSSProperties = {
-    border: "1px solid #e5e7eb",
-    borderRadius: 14,
-    background: "#ffffff",
-    overflow: "hidden",
-  };
-
-  const headerStyle: CSSProperties = {
-    padding: "10px 12px",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-    background: "#ffffff",
-  };
-
-  const leftStyle: CSSProperties = {
-    display: "flex",
-    flexDirection: "column",
-    gap: 2,
-    minWidth: 0,
-    flex: 1,
-  };
-
-  const titleRowStyle: CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    minWidth: 0,
-  };
-
-  const titleStyle: CSSProperties = {
-    fontSize: 12,
-    fontWeight: 900,
-    color: "#111827",
-    whiteSpace: "nowrap",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-  };
-
-  const hintStyle: CSSProperties = {
-    fontSize: 12,
-    color: "#6b7280",
-    whiteSpace: "nowrap",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-  };
-
-  const headerBtnStyle: CSSProperties = {
-    border: "1px solid #e5e7eb",
-    background: "#ffffff",
-    borderRadius: 12,
-    padding: "8px 10px",
-    cursor: "pointer",
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-    color: "#111827",
-    fontWeight: 900,
-  };
-
-  const panelStyle: CSSProperties = {
-    padding: 12,
-    borderTop: "1px solid #e5e7eb",
-    background: "#ffffff",
-    display: open ? "block" : "none",
-  };
-
   return (
-    <section style={cardStyle}>
-      <div style={headerStyle}>
-        <div style={leftStyle}>
-          <div style={titleRowStyle}>
-            <span style={titleStyle}>{title}</span>
+    <section className="tbCard">
+      <div className="tbCardHeader">
+        <div className="tbCardHeaderLeft">
+          <div className="tbCardTitleRow">
+            <span className="tbCardTitle">{title}</span>
 
             {tooltip ? (
               <Tooltip text={tooltip}>
@@ -491,7 +392,7 @@ function AccordionSection({
             ) : null}
           </div>
 
-          {hint ? <div style={hintStyle}>{hint}</div> : null}
+          {hint ? <div className="tbCardHint">{hint}</div> : null}
         </div>
 
         <button
@@ -500,7 +401,7 @@ function AccordionSection({
           onClick={onToggle}
           aria-expanded={open}
           aria-controls={panelId}
-          style={headerBtnStyle}
+          className="tbCardHeaderBtn"
           title={open ? "Collapse" : "Expand"}
         >
           <ChevronIcon open={open} />
@@ -511,7 +412,8 @@ function AccordionSection({
         id={panelId}
         role="region"
         aria-labelledby={headerId}
-        style={panelStyle}
+        className="tbCardPanel"
+        style={{ display: open ? "block" : "none" }}
       >
         {children}
       </div>
@@ -520,9 +422,8 @@ function AccordionSection({
 }
 
 /**
- * Defensive readers for state fields.
- * These keep the toolbar resilient if persisted data or future schema changes
- * temporarily omit newer fields.
+ * Defensive readers for toolbar-only state fields.
+ * These protect the UI if older persisted layouts are missing newer fields.
  */
 function getPlaceModeFromState(state: unknown): PlaceMode {
   if (state && typeof state === "object" && "placeMode" in state) {
@@ -551,8 +452,7 @@ function getInvalidLabelsFromState(state: unknown): Record<string, string> {
 }
 
 /**
- * Parse an invalid cell key "x,y" into coordinates.
- * Used by the Status panel to show the cell position.
+ * Parse invalid cell keys formatted as "x,y".
  */
 function parseCellKey(key: string): { x: number; y: number } | null {
   const [xs, ys] = key.split(",");
@@ -565,7 +465,6 @@ function parseCellKey(key: string): { x: number; y: number } | null {
 
 /**
  * Returns the grouping color for status sections.
- * This keeps the status UI aligned with the palette used elsewhere.
  */
 function groupColor(type: StatusGroupType): string {
   return TYPE_COLOR[type];
@@ -579,7 +478,8 @@ type ToolbarProps = {
 
 /**
  * Returns the display name for a placed component.
- * The user's label (if present) takes precedence over the stable autoName.
+ * - label (user) takes precedence
+ * - autoName is the stable fallback (L1, AS1, ...)
  */
 function getComponentDisplayName(c: PlacedComponent): {
   name: string;
@@ -609,32 +509,24 @@ export function Toolbar({
   } = useEditorState();
 
   /**
-   * Grid inputs are kept local so users can type freely without immediately
-   * changing the grid. We sync them when the underlying state changes
-   * (e.g., loading a saved layout) as long as the user is not actively editing.
+   * Grid inputs use a draft-or-state model:
+   * - When not editing, the displayed value comes directly from editor state.
+   * - When editing, we hold a local string draft so users can type freely.
+   *
+   * This avoids syncing drafts via an effect (and avoids cascading render warnings).
    */
-  const [colsInput, setColsInput] = useState<string>(String(state.grid.cols));
-  const [rowsInput, setRowsInput] = useState<string>(String(state.grid.rows));
+  const [colsDraft, setColsDraft] = useState<string | null>(null);
+  const [rowsDraft, setRowsDraft] = useState<string | null>(null);
   const gridInputsEditingRef = useRef(false);
+
+  const colsValue = colsDraft ?? String(state.grid.cols);
+  const rowsValue = rowsDraft ?? String(state.grid.rows);
 
   const [gridError, setGridError] = useState<string | null>(null);
 
-  /* eslint-disable react-hooks/set-state-in-effect */
-  useEffect(() => {
-    if (gridInputsEditingRef.current) return;
-
-    const nextCols = String(state.grid.cols);
-    const nextRows = String(state.grid.rows);
-
-    setColsInput(nextCols);
-    setRowsInput(nextRows);
-    setGridError(null);
-  }, [state.grid.cols, state.grid.rows]);
-  /* eslint-enable react-hooks/set-state-in-effect */
-
   /**
-   * Status filter and rename state are UI-only.
-   * They do not belong in EditorState because they don't affect layout output.
+   * Status filter + rename state are UI-only.
+   * They do not belong in EditorState because they don’t affect exported layout data.
    */
   const [statusFilter, setStatusFilter] = useState<FilterValue>("ALL");
   const [renameDrafts, setRenameDrafts] = useState<Record<string, string>>({});
@@ -642,7 +534,7 @@ export function Toolbar({
   const [renameError, setRenameError] = useState<string | null>(null);
 
   /**
-   * Accordion open/closed state is UI-only and local to the toolbar.
+   * Accordion open/closed state is local to the toolbar UI.
    */
   const [openGrid, setOpenGrid] = useState(true);
   const [openTool, setOpenTool] = useState(true);
@@ -661,17 +553,15 @@ export function Toolbar({
   const isInvalidModeActive = placeMode === "INVALID_CELL";
 
   const parsedGrid = useMemo(() => {
-    const cols = Number(colsInput);
-    const rows = Number(rowsInput);
-    const colsOk = Number.isFinite(cols);
-    const rowsOk = Number.isFinite(rows);
+    const cols = Number(colsValue);
+    const rows = Number(rowsValue);
     return {
       cols,
       rows,
-      colsOk,
-      rowsOk,
+      colsOk: Number.isFinite(cols),
+      rowsOk: Number.isFinite(rows),
     };
-  }, [colsInput, rowsInput]);
+  }, [colsValue, rowsValue]);
 
   const gridWithinHardLimit = useMemo(() => {
     if (!parsedGrid.colsOk || !parsedGrid.rowsOk) return false;
@@ -682,16 +572,16 @@ export function Toolbar({
   }, [parsedGrid]);
 
   /**
-   * Determines if the "Apply" grid button should be enabled.
-   * We require valid numbers and a valid range. Normalization happens on apply.
+   * Apply is enabled only when drafts are numeric and inside hard bounds.
    */
-  const canApplyGrid = useMemo(() => {
-    return gridWithinHardLimit;
-  }, [gridWithinHardLimit]);
+  const canApplyGrid = useMemo(
+    () => gridWithinHardLimit,
+    [gridWithinHardLimit]
+  );
 
   const applyGridSize = () => {
-    const cols = Number(colsInput);
-    const rows = Number(rowsInput);
+    const cols = Number(colsValue);
+    const rows = Number(rowsValue);
 
     if (!Number.isFinite(cols) || !Number.isFinite(rows)) {
       setGridError("Enter valid numbers for rows and columns.");
@@ -713,8 +603,9 @@ export function Toolbar({
     const nextCols = clampInt(cols, 1, GRID_MAX_HARD);
     const nextRows = clampInt(rows, 1, GRID_MAX_HARD);
 
-    setColsInput(String(nextCols));
-    setRowsInput(String(nextRows));
+    // Normalize drafts to the applied values (keeps UI consistent after apply).
+    setColsDraft(String(nextCols));
+    setRowsDraft(String(nextRows));
     setGrid(nextCols, nextRows);
   };
 
@@ -783,62 +674,7 @@ export function Toolbar({
     setRenameError(null);
   };
 
-  const inputStyle: CSSProperties = {
-    width: "100%",
-    padding: "10px 10px",
-    fontSize: 14,
-    borderRadius: 12,
-    border: "1px solid #e5e7eb",
-    background: "#ffffff",
-    color: "#111827",
-    outline: "none",
-    boxSizing: "border-box",
-  };
-
-  const baseButton: CSSProperties = {
-    padding: "10px 10px",
-    fontSize: 13,
-    borderRadius: 12,
-    border: "1px solid #e5e7eb",
-    background: "#ffffff",
-    color: "#111827",
-    cursor: "pointer",
-    fontWeight: 800,
-  };
-
-  const iconButton: CSSProperties = {
-    width: 34,
-    height: 34,
-    borderRadius: 12,
-    border: "1px solid #e5e7eb",
-    background: "#ffffff",
-    color: "#111827",
-    cursor: "pointer",
-    fontWeight: 900,
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    flex: "0 0 auto",
-  };
-
   const saveEnabled = canSaveLayout ?? true;
-
-  const saveButton: CSSProperties = {
-    height: 34,
-    padding: "0 12px",
-    borderRadius: 12,
-    border: "1px solid #e5e7eb",
-    background: "#111827",
-    color: "#ffffff",
-    cursor: saveEnabled ? "pointer" : "not-allowed",
-    fontWeight: 900,
-    fontSize: 12,
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    opacity: saveEnabled ? 1 : 0.6,
-    whiteSpace: "nowrap",
-  };
 
   const countsByType = useMemo(() => {
     const map: Record<ComponentType, number> = {
@@ -946,20 +782,22 @@ export function Toolbar({
     const disabledReason = getToolDisabledReason(tool);
     const isDisabled = Boolean(disabledReason);
 
+    const btnStyle: CSSProperties = {
+      background: active ? "#111827" : "#ffffff",
+      color: active ? "#ffffff" : isDisabled ? "#9ca3af" : "#111827",
+      borderColor: active ? "#111827" : "#e5e7eb",
+      cursor: isDisabled ? "not-allowed" : "pointer",
+      opacity: isDisabled ? 0.7 : 1,
+    };
+
     const btn = (
       <button
         key={tool}
         type="button"
         onClick={() => setTool(tool)}
         disabled={isDisabled}
-        style={{
-          ...baseButton,
-          background: active ? "#111827" : "#ffffff",
-          color: active ? "#ffffff" : isDisabled ? "#9ca3af" : "#111827",
-          borderColor: active ? "#111827" : "#e5e7eb",
-          cursor: isDisabled ? "not-allowed" : "pointer",
-          opacity: isDisabled ? 0.7 : 1,
-        }}
+        className="tbToolBtn"
+        style={btnStyle}
         title={
           tool === "PAN"
             ? "Drag to move the canvas"
@@ -978,7 +816,7 @@ export function Toolbar({
 
     return (
       <Tooltip key={tool} text={disabledReason ?? ""}>
-        <span style={{ display: "inline-flex" }}>{btn}</span>
+        <span className="tbInlineFlex">{btn}</span>
       </Tooltip>
     );
   };
@@ -1021,6 +859,7 @@ export function Toolbar({
     const raw = renameDrafts[id] ?? "";
     const next = raw.trim();
 
+    // Empty input means "clear custom label" and fall back to autoName.
     if (next.length === 0) {
       if (group === "INVALID_CELL") {
         setState((prev) => {
@@ -1049,6 +888,7 @@ export function Toolbar({
       return;
     }
 
+    // No-op rename (case-insensitive)
     const currentDisplay = getCurrentDisplayNameForId(group, id);
     if (currentDisplay && currentDisplay.toLowerCase() === next.toLowerCase()) {
       setRenamingId(null);
@@ -1084,60 +924,6 @@ export function Toolbar({
 
     setRenamingId(null);
     setRenameError(null);
-  };
-
-  const renamePanelStyle: CSSProperties = {
-    marginTop: 8,
-    padding: 10,
-    borderRadius: 12,
-    border: "1px solid #e5e7eb",
-    background: "#f9fafb",
-    display: "flex",
-    flexDirection: "column",
-    gap: 8,
-    width: "100%",
-    boxSizing: "border-box",
-  };
-
-  const renameInputStyle: CSSProperties = {
-    width: "100%",
-    height: 36,
-    padding: "0 12px",
-    borderRadius: 12,
-    border: "1px solid #e5e7eb",
-    outline: "none",
-    fontSize: 13,
-    fontWeight: 700,
-    color: "#111827",
-    background: "#ffffff",
-    boxSizing: "border-box",
-  };
-
-  const renameBtnRowStyle: CSSProperties = {
-    display: "flex",
-    gap: 8,
-    justifyContent: "flex-end",
-    flexWrap: "wrap",
-  };
-
-  const btnBaseSmall: CSSProperties = {
-    height: 34,
-    padding: "0 12px",
-    borderRadius: 12,
-    border: "1px solid #e5e7eb",
-    background: "#ffffff",
-    color: "#111827",
-    cursor: "pointer",
-    fontWeight: 800,
-    fontSize: 12,
-    whiteSpace: "nowrap",
-  };
-
-  const btnPrimarySmall: CSSProperties = {
-    ...btnBaseSmall,
-    background: "#111827",
-    borderColor: "#111827",
-    color: "#ffffff",
   };
 
   const setPlaceMode = (mode: PlaceMode) => {
@@ -1204,25 +990,21 @@ export function Toolbar({
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 16, fontWeight: 900, color: "#111827" }}>
-            Ceiling Editor
-          </div>
-
-          <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
-            Grid square size:{" "}
-            <strong style={{ color: "#111827" }}>0.6m × 0.6m</strong>
+    <div className="tbRoot">
+      <div className="tbHeader">
+        <div className="tbHeaderLeft">
+          <div className="tbHeaderTitle">Ceiling Editor</div>
+          <div className="tbHeaderSub">
+            Grid square size: <strong className="tbStrong">0.6m × 0.6m</strong>
           </div>
         </div>
 
-        <div style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+        <div className="tbHeaderActions">
           <button
             type="button"
             onClick={handleSave}
             disabled={!saveEnabled}
-            style={saveButton}
+            className="tbSaveBtn"
             aria-label="Save layout"
             title="Save (creates a new layout on Home, overwrites on Saved)"
           >
@@ -1232,7 +1014,7 @@ export function Toolbar({
           <button
             type="button"
             onClick={onToggleSidebar}
-            style={iconButton}
+            className="tbIconBtn"
             aria-label="Collapse toolbar"
             title="Collapse toolbar"
           >
@@ -1254,88 +1036,76 @@ export function Toolbar({
         open={openGrid}
         onToggle={() => setOpenGrid((v) => !v)}
       >
-        <div style={{ display: "flex", gap: 10 }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 12, color: "#374151", marginBottom: 6 }}>
-              Cols
-            </div>
+        <div className="tbGridInputsRow">
+          <div className="tbGridField">
+            <div className="tbFieldLabel">Cols</div>
             <input
-              value={colsInput}
+              value={colsValue}
               onChange={(e) => {
-                setColsInput(e.target.value);
+                setColsDraft(e.target.value);
                 setGridError(null);
               }}
               onFocus={() => {
                 gridInputsEditingRef.current = true;
+                setColsDraft((prev) => prev ?? String(state.grid.cols));
               }}
               onBlur={() => {
                 gridInputsEditingRef.current = false;
 
-                const cols = Number(colsInput);
-                if (!Number.isFinite(cols) || colsInput.trim().length === 0) {
-                  setColsInput(String(state.grid.cols));
+                const cols = Number(colsValue);
+                if (!Number.isFinite(cols) || colsValue.trim().length === 0) {
+                  setColsDraft(null); // snap back to state value
                 }
               }}
               inputMode="numeric"
-              style={inputStyle}
+              className="tbInput"
             />
           </div>
 
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 12, color: "#374151", marginBottom: 6 }}>
-              Rows
-            </div>
+          <div className="tbGridField">
+            <div className="tbFieldLabel">Rows</div>
             <input
-              value={rowsInput}
+              value={rowsValue}
               onChange={(e) => {
-                setRowsInput(e.target.value);
+                setRowsDraft(e.target.value);
                 setGridError(null);
               }}
               onFocus={() => {
                 gridInputsEditingRef.current = true;
+                setRowsDraft((prev) => prev ?? String(state.grid.rows));
               }}
               onBlur={() => {
                 gridInputsEditingRef.current = false;
 
-                const rows = Number(rowsInput);
-                if (!Number.isFinite(rows) || rowsInput.trim().length === 0) {
-                  setRowsInput(String(state.grid.rows));
+                const rows = Number(rowsValue);
+                if (!Number.isFinite(rows) || rowsValue.trim().length === 0) {
+                  setRowsDraft(null); // snap back to state value
                 }
               }}
               inputMode="numeric"
-              style={inputStyle}
+              className="tbInput"
             />
           </div>
         </div>
 
-        {gridError ? (
-          <div style={{ marginTop: 10, fontSize: 12, color: "#b91c1c" }}>
-            {gridError}
-          </div>
-        ) : null}
+        {gridError ? <div className="tbError">{gridError}</div> : null}
 
         <button
           type="button"
           onClick={applyGridSize}
           disabled={!canApplyGrid}
+          className="tbApplyBtn"
           style={{
-            padding: "10px 10px",
-            fontSize: 13,
-            borderRadius: 12,
-            border: "1px solid #e5e7eb",
-            width: "100%",
-            marginTop: 10,
             background: canApplyGrid ? "#111827" : "#f3f4f6",
             color: canApplyGrid ? "#ffffff" : "#9ca3af",
             borderColor: canApplyGrid ? "#111827" : "#e5e7eb",
             cursor: canApplyGrid ? "pointer" : "not-allowed",
-            fontWeight: 800,
           }}
         >
           Apply
         </button>
 
-        <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
+        <div className="tbMuted">
           Recommended: 1–{GRID_MAX_RECOMMENDED} · Max: 1–{GRID_MAX_HARD}
         </div>
       </AccordionSection>
@@ -1353,13 +1123,9 @@ export function Toolbar({
         open={openTool}
         onToggle={() => setOpenTool((v) => !v)}
       >
-        <div
-          style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}
-        >
-          {TOOLS.map(renderToolButton)}
-        </div>
+        <div className="tbToolGrid">{TOOLS.map(renderToolButton)}</div>
 
-        <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
+        <div className="tbMuted">
           Tip: SELECT lets you drag-move components. Invalid cells highlight
           with a red border.
         </div>
@@ -1396,8 +1162,8 @@ export function Toolbar({
                   setActiveComponentType(c.value);
                   setTool("PLACE");
                 }}
+                className="tbToolBtn"
                 style={{
-                  ...baseButton,
                   textAlign: "left",
                   display: "flex",
                   alignItems: "center",
@@ -1405,7 +1171,9 @@ export function Toolbar({
                   padding: 12,
                   background: "#ffffff",
                   borderColor: active ? color : "#e5e7eb",
-                  boxShadow: active ? `0 0 0 3px ${color}22` : "none",
+                  boxShadow: active
+                    ? `0 0 0 3px ${color}22`
+                    : "var(--shadow-1)",
                 }}
                 title={`Place ${c.label}`}
               >
@@ -1446,8 +1214,8 @@ export function Toolbar({
               setPlaceMode("INVALID_CELL");
               setTool("PLACE");
             }}
+            className="tbToolBtn"
             style={{
-              ...baseButton,
               textAlign: "left",
               display: "flex",
               alignItems: "center",
@@ -1459,7 +1227,7 @@ export function Toolbar({
                 : "#e5e7eb",
               boxShadow: isInvalidModeActive
                 ? `0 0 0 3px ${TYPE_COLOR.INVALID_CELL}22`
-                : "none",
+                : "var(--shadow-1)",
             }}
             title="Mark cells as invalid (blocks placement)"
           >
@@ -1494,7 +1262,7 @@ export function Toolbar({
           </button>
         </div>
 
-        <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
+        <div className="tbMuted">
           Tip: Invalid cells remain empty and block components.
         </div>
       </AccordionSection>
@@ -1530,15 +1298,12 @@ export function Toolbar({
               setRenamingId(null);
               setRenameError(null);
             }}
+            className="tbInput"
             style={{
               height: 34,
-              borderRadius: 12,
-              border: "1px solid #e5e7eb",
-              background: "#ffffff",
-              color: "#111827",
+              padding: "0 10px",
               fontWeight: 800,
               fontSize: 12,
-              padding: "0 10px",
               cursor: "pointer",
             }}
             aria-label="Filter placed items"
@@ -1553,11 +1318,7 @@ export function Toolbar({
           </select>
         </div>
 
-        {renameError ? (
-          <div style={{ marginTop: 10, fontSize: 12, color: "#b91c1c" }}>
-            {renameError}
-          </div>
-        ) : null}
+        {renameError ? <div className="tbError">{renameError}</div> : null}
 
         <div
           style={{
@@ -1648,14 +1409,14 @@ export function Toolbar({
                             background: "#ffffff",
                             boxShadow: selected
                               ? `0 0 0 3px ${color}22`
-                              : "none",
+                              : "var(--shadow-1)",
                           }}
                         >
                           <button
                             type="button"
                             onClick={() => selectListItem(it)}
+                            className="tbToolBtn"
                             style={{
-                              ...baseButton,
                               padding: "8px 10px",
                               borderRadius: 12,
                               borderColor: "#e5e7eb",
@@ -1665,6 +1426,7 @@ export function Toolbar({
                               display: "flex",
                               alignItems: "flex-start",
                               gap: 10,
+                              boxShadow: "none",
                             }}
                             title="Select on grid"
                           >
@@ -1728,7 +1490,8 @@ export function Toolbar({
                               <button
                                 type="button"
                                 onClick={() => startRename(it.id, it.name)}
-                                style={btnBaseSmall}
+                                className="savedBtn"
+                                style={{ height: 34, fontSize: 12 }}
                                 title="Rename"
                               >
                                 Rename
@@ -1737,9 +1500,10 @@ export function Toolbar({
                               <button
                                 type="button"
                                 onClick={() => deleteItem(it)}
+                                className="savedBtn"
                                 style={{
-                                  ...btnBaseSmall,
                                   width: 38,
+                                  height: 34,
                                   padding: 0,
                                   display: "inline-flex",
                                   alignItems: "center",
@@ -1754,7 +1518,20 @@ export function Toolbar({
                           ) : null}
 
                           {isRenaming ? (
-                            <div style={renamePanelStyle}>
+                            <div
+                              style={{
+                                marginTop: 8,
+                                padding: 10,
+                                borderRadius: 12,
+                                border: "1px solid #e5e7eb",
+                                background: "#f9fafb",
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: 8,
+                                width: "100%",
+                                boxSizing: "border-box",
+                              }}
+                            >
                               <input
                                 value={renameDrafts[it.id] ?? it.name}
                                 onChange={(e) =>
@@ -1763,7 +1540,7 @@ export function Toolbar({
                                     [it.id]: e.target.value,
                                   }))
                                 }
-                                style={renameInputStyle}
+                                className="savedRenameInput"
                                 placeholder={it.autoName}
                                 aria-label="Rename item"
                                 onKeyDown={(e) => {
@@ -1774,11 +1551,19 @@ export function Toolbar({
                                 autoFocus
                               />
 
-                              <div style={renameBtnRowStyle}>
+                              <div
+                                style={{
+                                  display: "flex",
+                                  gap: 8,
+                                  justifyContent: "flex-end",
+                                  flexWrap: "wrap",
+                                }}
+                              >
                                 <button
                                   type="button"
                                   onClick={() => commitRename(type, it.id)}
-                                  style={btnPrimarySmall}
+                                  className="savedBtn savedBtnPrimary"
+                                  style={{ height: 34, fontSize: 12 }}
                                   title="Save name"
                                 >
                                   Save
@@ -1787,7 +1572,8 @@ export function Toolbar({
                                 <button
                                   type="button"
                                   onClick={cancelRename}
-                                  style={btnBaseSmall}
+                                  className="savedBtn"
+                                  style={{ height: 34, fontSize: 12 }}
                                   title="Cancel rename"
                                 >
                                   Cancel
@@ -1814,8 +1600,8 @@ export function Toolbar({
             type="button"
             onClick={clearAll}
             disabled={!hasAnyPlaced}
+            className="tbToolBtn"
             style={{
-              ...baseButton,
               flex: 1,
               background: !hasAnyPlaced ? "#f3f4f6" : "#ffffff",
               color: !hasAnyPlaced ? "#9ca3af" : "#111827",
@@ -1830,8 +1616,8 @@ export function Toolbar({
             type="button"
             onClick={clearSelection}
             disabled={!state.selectedComponentId && !selectedInvalidKey}
+            className="tbToolBtn"
             style={{
-              ...baseButton,
               flex: 1,
               background:
                 !state.selectedComponentId && !selectedInvalidKey
@@ -1856,9 +1642,8 @@ export function Toolbar({
           type="button"
           onClick={undo}
           disabled={!canUndo}
+          className="tbApplyBtn"
           style={{
-            ...baseButton,
-            width: "100%",
             marginTop: 10,
             background: canUndo ? "#111827" : "#f3f4f6",
             color: canUndo ? "#ffffff" : "#9ca3af",

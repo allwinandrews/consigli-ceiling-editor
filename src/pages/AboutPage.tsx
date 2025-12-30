@@ -1,65 +1,29 @@
 // src/pages/AboutPage.tsx
-import type { CSSProperties } from "react";
 
 /**
  * AboutPage
  *
- * A lightweight “project summary” screen for reviewers.
- * Keep this page simple and readable:
+ * Lightweight “project summary” screen for reviewers.
+ * Keeps the intent clear without requiring a deep code read:
  * - What the project is
  * - What it supports
  * - Who built it
- *
- * This is helpful in take-home projects because it reduces guesswork for
- * anyone reviewing the UI without reading the full codebase first.
  */
 export function AboutPage() {
-  const card: CSSProperties = {
-    background: "#ffffff",
-    border: "1px solid #e5e7eb",
-    borderRadius: 16,
-    padding: 16,
-    maxWidth: 900,
-    width: "100%",
-    boxSizing: "border-box",
-  };
-
-  const h2: CSSProperties = {
-    margin: 0,
-    fontSize: 16,
-    fontWeight: 950,
-    color: "#111827",
-  };
-
-  const p: CSSProperties = {
-    margin: "10px 0 0",
-    fontSize: 13,
-    color: "#374151",
-    lineHeight: 1.55,
-  };
-
-  const list: CSSProperties = {
-    margin: "10px 0 0",
-    paddingLeft: 18,
-    color: "#374151",
-    fontSize: 13,
-    lineHeight: 1.55,
-  };
-
   return (
-    <div style={{ padding: 16, display: "flex", justifyContent: "center" }}>
-      <div style={card}>
-        <h2 style={h2}>Project overview</h2>
-        <p style={p}>
+    <div className="aboutPage">
+      <div className="aboutCard">
+        <h2 className="aboutH2">Project overview</h2>
+        <p className="aboutP">
           This is a ceiling layout editor built as a take-home test. It supports
           placing and managing ceiling components on a grid, plus pan and zoom
           interactions for fast layout work.
         </p>
 
-        <div style={{ height: 12 }} />
+        <div className="aboutSpacer" />
 
-        <h2 style={h2}>Key features</h2>
-        <ul style={list}>
+        <h2 className="aboutH2">Key features</h2>
+        <ul className="aboutList">
           <li>
             Grid-based ceiling editor (each square represents 0.6m × 0.6m).
           </li>
@@ -72,10 +36,10 @@ export function AboutPage() {
           </li>
         </ul>
 
-        <div style={{ height: 12 }} />
+        <div className="aboutSpacer" />
 
-        <h2 style={h2}>Author</h2>
-        <p style={p}>Allwin James Andrews</p>
+        <h2 className="aboutH2">Author</h2>
+        <p className="aboutP">Allwin James Andrews</p>
       </div>
     </div>
   );
