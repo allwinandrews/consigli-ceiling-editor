@@ -828,7 +828,7 @@ export function Toolbar({
 
     setRenameDrafts((prev) => ({
       ...prev,
-      [id]: prev[id] ?? currentName,
+      [id]: currentName,
     }));
   };
 
@@ -1537,7 +1537,7 @@ export function Toolbar({
                               }}
                             >
                               <input
-                                value={renameDrafts[it.id] ?? it.name}
+                                value={renameDrafts[it.id] ?? ""}
                                 onChange={(e) => {
                                   setRenameDrafts((prev) => ({
                                     ...prev,

@@ -140,13 +140,6 @@ export function SavedLayoutsPage() {
       </div>
 
       <div className="savedListWrap">
-        {error ? (
-          <div className="savedCard savedErrorCard">
-            <div className="savedErrorTitle">Rename error</div>
-            <div className="savedErrorText">{error}</div>
-          </div>
-        ) : null}
-
         {savedLayouts.length === 0 ? (
           <div className="savedCard">
             <div className="savedEmptyTitle">No saved layouts yet</div>
@@ -157,6 +150,7 @@ export function SavedLayoutsPage() {
         ) : (
           savedLayouts.map((l) => {
             const isRenaming = renamingId === l.id;
+            const showInlineError = isRenaming ? error : null;
 
             return (
               <div key={l.id} className="savedCard">
@@ -167,17 +161,28 @@ export function SavedLayoutsPage() {
                         {l.name}
                       </div>
                     ) : (
-                      <input
-                        value={renameDraft}
-                        onChange={(e) => setRenameDraft(e.target.value)}
-                        className="savedRenameInput"
-                        autoFocus
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") commitRename(l.id);
-                          if (e.key === "Escape") cancelRename();
-                        }}
-                        aria-label="Rename layout"
-                      />
+                      <>
+                        <input
+                          value={renameDraft}
+                          onChange={(e) => {
+                            setRenameDraft(e.target.value);
+                            if (error) setError(null);
+                          }}
+                          className="savedRenameInput"
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") commitRename(l.id);
+                            if (e.key === "Escape") cancelRename();
+                          }}
+                          aria-label="Rename layout"
+                        />
+
+                        {showInlineError ? (
+                          <div className="tbError" style={{ marginTop: 6 }}>
+                            {showInlineError}
+                          </div>
+                        ) : null}
+                      </>
                     )}
 
                     <div className="savedMeta">
