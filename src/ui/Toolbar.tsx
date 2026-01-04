@@ -531,7 +531,10 @@ export function Toolbar({
   const [statusFilter, setStatusFilter] = useState<FilterValue>("ALL");
   const [renameDrafts, setRenameDrafts] = useState<Record<string, string>>({});
   const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameError, setRenameError] = useState<string | null>(null);
+  const [renameError, setRenameError] = useState<{
+    id: string;
+    message: string;
+  } | null>(null);
 
   /**
    * Accordion open/closed state is local to the toolbar UI.
@@ -673,8 +676,6 @@ export function Toolbar({
     setRenamingId(null);
     setRenameError(null);
   };
-
-  const saveEnabled = canSaveLayout ?? true;
 
   const countsByType = useMemo(() => {
     const map: Record<ComponentType, number> = {
@@ -897,7 +898,10 @@ export function Toolbar({
     }
 
     if (takenNames.has(next.toLowerCase())) {
-      setRenameError("Name already exists. Choose a unique name.");
+      setRenameError({
+        id,
+        message: "Name already exists. Choose a unique name.",
+      });
       return;
     }
 
@@ -979,7 +983,7 @@ export function Toolbar({
   };
 
   const handleSave = () => {
-    if (!saveEnabled) return;
+    if (!(canSaveLayout ?? true)) return;
 
     if (onSaveLayout) {
       onSaveLayout();
@@ -1003,7 +1007,7 @@ export function Toolbar({
           <button
             type="button"
             onClick={handleSave}
-            disabled={!saveEnabled}
+            disabled={!(canSaveLayout ?? true)}
             className="tbSaveBtn"
             aria-label="Save layout"
             title="Save (creates a new layout on Home, overwrites on Saved)"
@@ -1028,10 +1032,9 @@ export function Toolbar({
         title="Room Ceiling size"
         hint={`Cols: ${state.grid.cols} · Rows: ${state.grid.rows}`}
         tooltip={
-          "Sets the ceiling grid size\n" +
-          "Defined by number of rows and columns\n" +
-          "Components outside new bounds are removed\n" +
-          "Components on invalid cells are also removed"
+          "Sets the ceiling grid size defined by number of rows and columns.\n" +
+          "Components outside new bounds are removed.\n" +
+          "Components on invalid cells are also removed."
         }
         open={openGrid}
         onToggle={() => setOpenGrid((v) => !v)}
@@ -1116,9 +1119,9 @@ export function Toolbar({
         hint={`Current: ${state.tool}`}
         tooltip={
           "PAN: Drag to move view.\n" +
-          "SELECT: Click to select and drag components, or click invalid cells to highlight.\n" +
-          "PLACE: Click to add or toggle invalid cells.\n" +
-          "ERASE: Click to delete components or invalid cells."
+          "SELECT: Click to select and drag components to highlight.\n" +
+          "PLACE: Click to add or toggle components.\n" +
+          "ERASE: Click to delete components."
         }
         open={openTool}
         onToggle={() => setOpenTool((v) => !v)}
@@ -1136,10 +1139,9 @@ export function Toolbar({
         title="Components"
         hint={`Placed: ${placedCount} · Invalid: ${invalidCount}`}
         tooltip={
-          "Pick a component to place\n" +
-          "Clicking a card switches to PLACE tool\n" +
-          "Invalid cell marks empty cells\n" +
-          "Components cannot be placed on invalid cells"
+          "Pick a component to place.\n" +
+          "Clicking a card switches to PLACE tool.\n" +
+          "Components cannot be placed on invalid cells."
         }
         open={openComponents}
         onToggle={() => setOpenComponents((v) => !v)}
@@ -1275,10 +1277,10 @@ export function Toolbar({
         }`}
         tooltip={
           "Shows what’s placed and where\n" +
-          "Includes components and invalid cells\n" +
-          "Use the filter to view one type\n" +
-          "Click an item to highlight it on the grid\n" +
-          "Rename assigns a unique label"
+          "(Includes components and invalid cells).\n" +
+          "Use the filter to view one type.\n" +
+          "Click an item to highlight it on the grid.\n" +
+          "Rename assigns a unique label."
         }
         open={openStatus}
         onToggle={() => setOpenStatus((v) => !v)}
@@ -1317,8 +1319,6 @@ export function Toolbar({
             <option value="INVALID_CELL">Invalid Cells</option>
           </select>
         </div>
-
-        {renameError ? <div className="tbError">{renameError}</div> : null}
 
         <div
           style={{
@@ -1398,6 +1398,10 @@ export function Toolbar({
                           : state.selectedComponentId === it.id;
 
                       const isRenaming = renamingId === it.id;
+                      const showRenameError =
+                        isRenaming && renameError?.id === it.id
+                          ? renameError.message
+                          : null;
 
                       return (
                         <div
@@ -1534,12 +1538,14 @@ export function Toolbar({
                             >
                               <input
                                 value={renameDrafts[it.id] ?? it.name}
-                                onChange={(e) =>
+                                onChange={(e) => {
                                   setRenameDrafts((prev) => ({
                                     ...prev,
                                     [it.id]: e.target.value,
-                                  }))
-                                }
+                                  }));
+                                  if (renameError?.id === it.id)
+                                    setRenameError(null);
+                                }}
                                 className="savedRenameInput"
                                 placeholder={it.autoName}
                                 aria-label="Rename item"
@@ -1550,6 +1556,15 @@ export function Toolbar({
                                 }}
                                 autoFocus
                               />
+
+                              {showRenameError ? (
+                                <div
+                                  className="tbError"
+                                  style={{ marginTop: 0 }}
+                                >
+                                  {showRenameError}
+                                </div>
+                              ) : null}
 
                               <div
                                 style={{
